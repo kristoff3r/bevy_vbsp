@@ -1,0 +1,10 @@
+---
+source: tests/parse.rs
+expression: result
+---
+patch(PatchMaterial(
+  include: "tests/data/concretefloor003.vmt",
+  replace: {
+    "$ssbump": "0",
+  },
+))

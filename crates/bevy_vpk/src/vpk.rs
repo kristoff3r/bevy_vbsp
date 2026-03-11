@@ -49,10 +49,7 @@ fn load_vpk(
     let vpk_reader = vpk_reader.clone();
     let mut vpk_reader = vpk_reader.vpks.lock().unwrap();
     for path in paths {
-        let Ok(vpk) = vpk::from_path(path) else {
-            warn!("Could not load VPK at {path:?}");
-            continue;
-        };
+        let vpk = vpk::from_path(path).unwrap();
         vpk_reader.insert(path.clone(), vpk);
         info!("Loaded VPK: {:?}", path);
     }

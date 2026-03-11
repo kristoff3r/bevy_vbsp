@@ -16,11 +16,10 @@ glam = "0.30"
 # NOTE: Using fork that removes unnecessary noisy log lines
 vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
 vtf = "0.3"
-vbsp = { git = "https://github.com/eira-fransham/vbsp.git" }
+vbsp = { git = "https://codeberg.org/icewind/vbsp.git" }
 vpk = "0.3"
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
 vmt-parser = { path = "crates/vmt-parser" }
-qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
 # TODO: Some internals need to be exposed, so we have a vendored fork
 # vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
 
@@ -31,16 +30,9 @@ cfg-if = "1.0"
 clap = "4.5"
 futures-io = "0.3"
 image = "0.25"
-itertools = "0.14"
 tracing = "0.1"
 pin-project = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-
-[patch."https://github.com/eira-fransham/qbsp.git"]
-qbsp = { path = "../qbsp" }
-
-[patch."https://github.com/eira-fransham/vbsp.git"]
-vbsp = { path = "../vbsp" }
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]

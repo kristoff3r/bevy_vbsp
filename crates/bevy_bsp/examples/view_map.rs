@@ -12,8 +12,6 @@ use clap::{Parser, ValueEnum};
 enum GamePreset {
     #[value(alias("tf2"))]
     TeamFortress2,
-    #[value(alias("revolution"))]
-    PortalRevolution,
     #[default]
     #[value(alias("css"))]
     CounterStrikeSource,
@@ -23,7 +21,6 @@ impl From<GamePreset> for Game {
     fn from(value: GamePreset) -> Self {
         match value {
             GamePreset::TeamFortress2 => Game::TF2,
-            GamePreset::PortalRevolution => Game::PORTAL_REVOLUTION,
             GamePreset::CounterStrikeSource => Game::CSS,
         }
     }
@@ -33,7 +30,6 @@ impl fmt::Display for GamePreset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GamePreset::TeamFortress2 => write!(f, "tf2"),
-            GamePreset::PortalRevolution => write!(f, "revolution"),
             GamePreset::CounterStrikeSource => write!(f, "css"),
         }
     }
@@ -43,7 +39,7 @@ impl fmt::Display for GamePreset {
 struct Args {
     #[arg(long, default_value_t)]
     game: GamePreset,
-    #[arg(default_value = "test")]
+    #[arg(default_value = "aim_map")]
     map: String,
 }
 
@@ -57,7 +53,7 @@ fn main() {
 
     let load_vpks = move |mut commands: Commands| {
         commands.trigger(LoadVpks {
-            paths: game.vpk_paths().into_iter().map(Into::into).collect(),
+            paths: game.vpk_paths().map(Into::into).collect(),
         });
     };
 
@@ -74,8 +70,7 @@ fn main() {
 
     app.init_state::<MapState>();
 
-    // app.add_systems(Startup, (load_vpks, spawn_light));
-    app.add_systems(Startup, load_vpks);
+    app.add_systems(Startup, (load_vpks, spawn_light));
 
     app.add_observer(load_map);
 
@@ -86,59 +81,42 @@ fn main() {
 
 #[cfg(windows)]
 const PREFIX: &str = "C:/Program Files (x86)/Steam/steamapps/common";
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const PREFIX: &str = concat!(env!("HOME"), "/.steam/steam/steamapps/common");
-#[cfg(target_os = "macos")]
-const PREFIX: &str = concat!(
-    env!("HOME"),
-    "/Library/Application Support/Steam/steamapps/common"
-);
 
 #[derive(Default, Copy, Clone)]
 struct Game {
     name: &'static str,
     asset_dir: &'static str,
-    vpk_prefix: Option<&'static str>,
+    vpk_prefix: &'static str,
     vpks: &'static [&'static str],
-    extension: Option<&'static Game>,
 }
 
 const STANDARD_VPKS: [&str; 2] = ["textures", "misc"];
 
 impl Game {
-    const fn hl2(name: &'static str) -> Self {
-        Game {
-            name,
-            asset_dir: "hl2",
-            vpk_prefix: Some("hl2"),
-            vpks: &STANDARD_VPKS,
-            extension: None,
-        }
-    }
-
     const TF2: Game = Game {
         name: "Team Fortress 2",
         asset_dir: "tf",
-        vpk_prefix: Some("tf2"),
+        vpk_prefix: "tf2",
         vpks: &STANDARD_VPKS,
-        extension: Some(&Self::hl2("Team Fortress 2")),
     };
 
     const CSS: Game = Game {
         name: "Counter-Strike Source",
         asset_dir: "cstrike",
-        vpk_prefix: Some("cstrike"),
+        vpk_prefix: "cstrike",
         vpks: &["pak"],
-        extension: Some(&Self::hl2("Counter-Strike Source")),
     };
 
-    const PORTAL_REVOLUTION: Game = Game {
-        name: "Portal Revolution",
-        asset_dir: "revolution",
-        vpk_prefix: None,
-        vpks: &["pak01"],
-        extension: None,
-    };
+    fn to_hl2(&self) -> Self {
+        Game {
+            name: self.name,
+            asset_dir: "hl2",
+            vpk_prefix: "hl2",
+            vpks: &STANDARD_VPKS,
+        }
+    }
 
     fn resolve(&self, vpk: &str) -> String {
         let Self {
@@ -148,23 +126,16 @@ impl Game {
             ..
         } = self;
 
-        let vpk_name = match vpk_prefix {
-            Some(prefix) => format_args!("{}_{vpk}", *prefix),
-            None => format_args!("{vpk}"),
-        };
-
-        format!("{PREFIX}/{name}/{asset_dir}/{vpk_name}_dir.vpk")
+        format!("{PREFIX}/{name}/{asset_dir}/{vpk_prefix}_{vpk}_dir.vpk")
     }
 
-    fn vpk_paths(&self) -> Vec<String> {
-        let mut paths = self
-            .extension
-            .map(|ext| ext.vpk_paths())
-            .unwrap_or_default();
+    fn vpk_paths(&self) -> impl Iterator<Item = String> + '_ {
+        let hl2 = self.to_hl2();
 
-        paths.extend(self.vpks.iter().map(|vpk| self.resolve(vpk)));
-
-        paths
+        hl2.vpks
+            .into_iter()
+            .map(move |vpk| hl2.resolve(vpk))
+            .chain(self.vpks.iter().map(|vpk| self.resolve(vpk)))
     }
 }
 
@@ -180,7 +151,6 @@ fn spawn_light(mut commands: Commands) {
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
             shadows_enabled: true,
-            affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
         Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),

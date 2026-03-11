@@ -13,27 +13,26 @@ avian3d = "0.6.0-rc.0"
 glam = "0.30"
 
 # Valve
-vmdl = "0.2"
-vtf = "0.3.1"
-vbsp = "0.9"
+# NOTE: Using fork that removes unnecessary noisy log lines
+vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
+vtf = "0.3"
+vbsp = { git = "https://codeberg.org/icewind/vbsp.git" }
 vpk = "0.3"
-vdf-reader = "0.3.1"
-vmt-parser = "0.2.0"
+vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
+vmt-parser = { path = "crates/vmt-parser" }
+# TODO: Some internals need to be exposed, so we have a vendored fork
+# vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
 
 # Other
 anyhow = "1.0"
 async-fs = "2.0"
 cfg-if = "1.0"
+clap = "4.5"
 futures-io = "0.3"
 image = "0.25"
 tracing = "0.1"
 pin-project = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-
-[patch.crates-io]
-# TODO: upstream changes
-vmt-parser = { path = "crates/vmt-parser" }
-# vtf = { path = "crates/vtf-rs" }
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]

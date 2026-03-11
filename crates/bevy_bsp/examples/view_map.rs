@@ -1,13 +1,69 @@
-use std::default;
+use std::fmt;
 
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::view::Hdr;
-use bevy_bsp::entities::spawn_bsp_model;
-use bevy_bsp::{BspAsset, BspLoaderPlugin, MapAssets, spawn_map_entities};
+use bevy_bsp::{BspLoaderPlugin, MapAssets, spawn_map_entities};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
+use clap::{Parser, ValueEnum};
+
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+enum GamePreset {
+    #[value(alias("tf2"))]
+    TeamFortress2,
+    #[default]
+    #[value(alias("css"))]
+    CounterStrikeSource,
+}
+
+impl From<GamePreset> for Game {
+    fn from(value: GamePreset) -> Self {
+        match value {
+            GamePreset::TeamFortress2 => Game::TF2,
+            GamePreset::CounterStrikeSource => Game::CSS,
+        }
+    }
+}
+
+impl fmt::Display for GamePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GamePreset::TeamFortress2 => write!(f, "tf2"),
+            GamePreset::CounterStrikeSource => write!(f, "css"),
+        }
+    }
+}
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(long, default_value_t)]
+    game: GamePreset,
+    #[arg(default_value = "aim_map")]
+    map: String,
+}
+
 fn main() {
+    let args = Args::parse();
+
+    let game_preset = args.game;
+    let game: Game = args.game.into();
+    let map = args.map;
+    let map_assets_path = format!("maps/{game_preset}/{map}.bsp");
+
+    let load_vpks = move |mut commands: Commands| {
+        commands.trigger(LoadVpks {
+            paths: game.vpk_paths().map(Into::into).collect(),
+        });
+    };
+
+    let load_map =
+        move |_event: On<LoadVPKDone>, mut commands: Commands, asset_server: Res<AssetServer>| {
+            commands.insert_resource(MapAssets {
+                bsp: asset_server.load(&map_assets_path),
+            });
+        };
+
     let mut app = App::new();
     // NOTE: VpkPlugin must come before DefaultPlugins due to registering an AssetSource
     app.add_plugins((VpkPlugin, DefaultPlugins, BspLoaderPlugin, PlayerPlugin));
@@ -23,11 +79,65 @@ fn main() {
     app.run();
 }
 
-const VPK_PATHS: &[&str] = &[
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/cstrike/cstrike_pak_dir.vpk",
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/hl2/hl2_textures_dir.vpk",
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/hl2/hl2_misc_dir.vpk",
-];
+#[cfg(windows)]
+const PREFIX: &str = "C:/Program Files (x86)/Steam/steamapps/common";
+#[cfg(unix)]
+const PREFIX: &str = concat!(env!("HOME"), "/.steam/steam/steamapps/common");
+
+#[derive(Default, Copy, Clone)]
+struct Game {
+    name: &'static str,
+    asset_dir: &'static str,
+    vpk_prefix: &'static str,
+    vpks: &'static [&'static str],
+}
+
+const STANDARD_VPKS: [&str; 2] = ["textures", "misc"];
+
+impl Game {
+    const TF2: Game = Game {
+        name: "Team Fortress 2",
+        asset_dir: "tf",
+        vpk_prefix: "tf2",
+        vpks: &STANDARD_VPKS,
+    };
+
+    const CSS: Game = Game {
+        name: "Counter-Strike Source",
+        asset_dir: "cstrike",
+        vpk_prefix: "cstrike",
+        vpks: &["pak"],
+    };
+
+    fn to_hl2(&self) -> Self {
+        Game {
+            name: self.name,
+            asset_dir: "hl2",
+            vpk_prefix: "hl2",
+            vpks: &STANDARD_VPKS,
+        }
+    }
+
+    fn resolve(&self, vpk: &str) -> String {
+        let Self {
+            name,
+            asset_dir,
+            vpk_prefix,
+            ..
+        } = self;
+
+        format!("{PREFIX}/{name}/{asset_dir}/{vpk_prefix}_{vpk}_dir.vpk")
+    }
+
+    fn vpk_paths(&self) -> impl Iterator<Item = String> + '_ {
+        let hl2 = self.to_hl2();
+
+        hl2.vpks
+            .into_iter()
+            .map(move |vpk| hl2.resolve(vpk))
+            .chain(self.vpks.iter().map(|vpk| self.resolve(vpk)))
+    }
+}
 
 #[derive(States, Default, PartialEq, PartialOrd, Eq, Ord, Hash, Clone, Copy, Debug)]
 pub enum MapState {
@@ -45,18 +155,6 @@ fn spawn_light(mut commands: Commands) {
         },
         Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-}
-
-fn load_vpks(mut commands: Commands) {
-    commands.trigger(LoadVpks {
-        paths: VPK_PATHS.iter().map(|p| p.into()).collect(),
-    });
-}
-
-fn load_map(_event: On<LoadVPKDone>, mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(MapAssets {
-        bsp: asset_server.load("maps/css/aim_map.bsp"),
-    });
 }
 
 fn check_map_loaded(

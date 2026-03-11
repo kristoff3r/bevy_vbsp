@@ -1,7 +1,13 @@
 pub mod entities;
 
 use core::panic;
-use std::{ops::Deref, path::PathBuf, result::Result, sync::Arc};
+use std::{
+    ffi::OsStr,
+    ops::Deref,
+    path::{Path, PathBuf},
+    result::Result,
+    sync::Arc,
+};
 
 use anyhow::bail;
 use avian3d::prelude::RigidBody;
@@ -13,9 +19,10 @@ use bevy::{
     platform::collections::HashMap,
     prelude::*,
     render::render_resource::{
-        Extent3d, TextureDimension, TextureViewDescriptor, TextureViewDimension,
+        Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
     },
 };
+use image::imageops::FilterType;
 use entities::spawn_bsp_model;
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags, Vector};
@@ -183,12 +190,14 @@ pub fn spawn_map_entities(
             .as_str()
             .to_ascii_lowercase();
 
-        let model = bsp_asset.models.get(name.as_str()).unwrap_or_else(|| {
-            panic!(
+        let Some(model) = bsp_asset.models.get(name.as_str()) else {
+            warn!(
                 "static prop model={} not found in bsp pakfile",
                 name.as_str()
-            )
-        });
+            );
+
+            continue;
+        };
 
         let transform = Transform::from_translation(Vec3::from(source_to_bevy(static_prop.origin)))
             .with_rotation(angles_to_bevy(&static_prop.angles));
@@ -203,28 +212,53 @@ pub fn spawn_map_entities(
         );
     }
 
-    if bsp_asset.skybox_images.len() == 6 {
-        let (size, format) = {
-            let image = images.get(&bsp_asset.skybox_images[0]).unwrap();
+    const EXPECTED_SKYBOX_IMAGE_COUNT: u32 = 6;
 
-            (image.size(), image.texture_descriptor.format)
+    if bsp_asset.skybox_images.len() == EXPECTED_SKYBOX_IMAGE_COUNT as usize {
+        let (size, format) = {
+            bsp_asset.skybox_images.iter().map(|img_path| {
+                let image = images.get(img_path).unwrap();
+
+                (image.size(), image.texture_descriptor.format)
+            }).reduce(|a, b| {
+                assert_eq!(a.1, b.1, "Mismatched texture formats in skybox");
+
+                (UVec2 {
+                    x: a.0.x.max(b.0.x),
+                    y: a.0.y.max(b.0.y),
+                },
+                a.1)
+            
+            }).unwrap()
         };
         let pixel_size = format.pixel_size().unwrap() as u32;
         // let (size, format) = (UVec2::splat(512), TextureFormat::Rgba8UnormSrgb);
         // println!("Skybox size and format: {size:?} {format:?} pixel_size={pixel_size}");
         let mut result = Image::new(
             Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 6,
+                width: size.x.max(1),
+                height: size.y.max(1),
+                depth_or_array_layers: EXPECTED_SKYBOX_IMAGE_COUNT,
             },
             TextureDimension::D2,
-            vec![0xff; (size.x * size.y * pixel_size * 6) as usize],
+            vec![0xff; (size.x * size.y * pixel_size * EXPECTED_SKYBOX_IMAGE_COUNT) as usize],
             format,
-            RenderAssetUsages::default(),
+            RenderAssetUsages::RENDER_WORLD,
         );
         for (i, handle) in bsp_asset.skybox_images.iter().enumerate() {
             let image = images.get(handle).unwrap();
+            let image_owned;
+            let image = if image.size() == size {
+                image
+            } else {
+                let resized = image.clone().try_into_dynamic().unwrap().resize_to_fill(
+                    size.x,
+                    size.y,
+                    FilterType::CatmullRom,
+                );
+                image_owned = Image::from_dynamic(resized, true, RenderAssetUsages::RENDER_WORLD);
+                &image_owned
+            };
             if let Some(slice) = result.data.as_mut() {
                 let bytes = (size.x * size.y * pixel_size) as usize;
                 slice[bytes * i..bytes * (i + 1)].copy_from_slice(image.data.as_ref().unwrap());
@@ -314,63 +348,85 @@ impl AssetLoader for BspAssetLoader {
         };
 
         let load_material = async |load_context: &mut LoadContext<'_>, name: &str| {
-            let path = material_path(name);
-            let data = read_vpk_file(&bsp, load_context, &path).await?;
-            let vmt = String::from_utf8(data).expect("bad vmt utf8");
-            let Ok(mut vmt) = vmt_parser::from_str(&vmt) else {
-                bail!("bad vmt: {}", path);
-            };
+            let vmt_path = material_path(name);
+            let material = if let Some(vmt_path) = vmt_path {
+                let vmt_data = read_vpk_file(&bsp, load_context, &vmt_path).await?;
+                let vmt = String::from_utf8(vmt_data).expect("bad vmt utf8");
+                let Ok(mut vmt) = vmt_parser::from_str(&vmt) else {
+                    bail!("bad vmt: {}", vmt_path);
+                };
 
-            if let vmt_parser::material::Material::Patch(mat) = vmt {
-                let include_path = mat.include.to_lowercase();
-                let base =
-                    String::from_utf8(read_vpk_file(&bsp, load_context, &include_path).await?)
-                        .expect("bad vmt utf8")
-                        .to_ascii_lowercase();
+                if let vmt_parser::material::Material::Patch(mat) = vmt {
+                    let include_path = mat.include.to_lowercase();
+                    let base =
+                        String::from_utf8(read_vpk_file(&bsp, load_context, &include_path).await?)
+                            .expect("bad vmt utf8")
+                            .to_ascii_lowercase();
 
-                vmt = mat.apply(&base).expect("bad vmt patch");
-            }
+                    vmt = mat.apply(&base).expect("bad vmt patch");
+                }
 
-            let texture = if let Some(name) = vmt.base_texture() {
-                if let Ok(texture) = load_texture(&bsp, load_context, &name).await {
+                let texture = if let Some(name) = vmt.base_texture() {
+                    if let Ok(texture) = load_texture(&bsp, load_context, &name).await {
+                        Some(texture)
+                    } else {
+                        warn!("Using default texture for missing texture: {}", name);
+                        println!("{}", std::backtrace::Backtrace::capture());
+                        Some(default_texture.clone())
+                    }
+                } else {
+                    // warn!("No base texture for material: {vmt:?}");
+                    Some(default_texture.clone())
+                };
+
+                let bump_map = if let Some(name) = vmt.bump_map() {
+                    load_texture(&bsp, load_context, &name).await.ok()
+                } else {
+                    None
+                };
+
+                let base_color = match &vmt {
+                    vmt_parser::material::Material::UnlitGeneric(mat) => {
+                        Color::srgba(mat.color.0[0], mat.color.0[1], mat.color.0[2], mat.alpha)
+                    }
+                    _ => Color::WHITE,
+                };
+
+                StandardMaterial {
+                    base_color,
+                    base_color_texture: texture,
+                    normal_map_texture: bump_map,
+                    perceptual_roughness: 0.8,
+                    reflectance: 0.2,
+                    metallic: 0.0,
+                    alpha_mode: if vmt.translucent() {
+                        AlphaMode::Blend
+                    } else if let Some(test) = vmt.alpha_test() {
+                        AlphaMode::Mask(test)
+                    } else {
+                        AlphaMode::Opaque
+                    },
+                    ..default()
+                }
+            } else {
+                let texture_name = texture_path(name);
+                let texture = if let Some(texture_name) = texture_name
+                    && let Ok(texture) = load_texture(&bsp, load_context, &texture_name).await
+                {
                     Some(texture)
                 } else {
                     warn!("Using default texture for missing texture: {}", name);
+                    println!("{}", std::backtrace::Backtrace::capture());
                     Some(default_texture.clone())
+                };
+
+                StandardMaterial {
+                    base_color_texture: texture,
+                    perceptual_roughness: 0.8,
+                    reflectance: 0.2,
+                    metallic: 0.0,
+                    ..default()
                 }
-            } else {
-                // warn!("No base texture for material: {vmt:?}");
-                Some(default_texture.clone())
-            };
-
-            let bump_map = if let Some(name) = vmt.bump_map() {
-                load_texture(&bsp, load_context, &name).await.ok()
-            } else {
-                None
-            };
-
-            let base_color = match &vmt {
-                vmt_parser::material::Material::UnlitGeneric(mat) => {
-                    Color::srgba(mat.color.0[0], mat.color.0[1], mat.color.0[2], mat.alpha)
-                }
-                _ => Color::WHITE,
-            };
-
-            let material = StandardMaterial {
-                base_color,
-                base_color_texture: texture,
-                normal_map_texture: bump_map,
-                perceptual_roughness: 0.8,
-                reflectance: 0.2,
-                metallic: 0.0,
-                alpha_mode: if vmt.translucent() {
-                    AlphaMode::Blend
-                } else if let Some(test) = vmt.alpha_test() {
-                    AlphaMode::Mask(test)
-                } else {
-                    AlphaMode::Opaque
-                },
-                ..default()
             };
 
             Ok::<_, anyhow::Error>(material)
@@ -455,13 +511,16 @@ impl AssetLoader for BspAssetLoader {
                         if models.contains_key(model_key) {
                             continue;
                         }
-                        let Ok(model_data) = load_model(load_context, model_key).await else {
-                            continue;
-                        };
+                        match load_model(load_context, model_key).await {
+                            Ok(model_data) => {
+                                load_model_textures(load_context, &model_data).await;
 
-                        load_model_textures(load_context, &model_data).await;
-
-                        models.insert(model_key.to_owned(), model_data);
+                                models.insert(model_key.to_owned(), model_data);
+                            }
+                            Err(e) => {
+                                warn!("Could not spawn model: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -504,7 +563,7 @@ impl AssetLoader for BspAssetLoader {
                     "info_player_counterterrorist" => {
                         ct_spawn_points.push(transform);
                     }
-                    "info_player_start" => (),
+                    "info_player_start" | "info_player_teamspawn" => t_spawn_points.push(transform),
                     _ => {
                         panic!("unknown class: {}", entity.class);
                     }
@@ -517,11 +576,13 @@ impl AssetLoader for BspAssetLoader {
             if models.contains_key(&model_key) {
                 continue;
             }
-            let model_data = load_model(load_context, &model_key)
-                .await
-                .unwrap_or_else(|e| {
-                    panic!("model={model_key:?} not found in vpk or bsp pakfile: {e}")
-                });
+            let model_data = match load_model(load_context, &model_key).await {
+                Ok(model_data) => model_data,
+                Err(e) => {
+                    warn!("model={model_key:?} not found in vpk or bsp pakfile: {e}");
+                    continue;
+                }
+            };
 
             load_model_textures(load_context, &model_data).await;
 
@@ -538,17 +599,24 @@ impl AssetLoader for BspAssetLoader {
             .to_ascii_lowercase();
 
         let mut skybox_images = Vec::new();
-        for dir in ["rt", "lf", "up", "dn", "ft", "bk"] {
-            let path = format!("skybox/{skybox}{dir}");
-            match load_texture(&bsp, load_context, &path).await {
-                Ok(image) => {
-                    // println!("Loaded skybox image: {}", path);
-                    skybox_images.push(image);
-                }
-                Err(e) => {
-                    println!("Missing skybox image {}: {e}", path);
+
+        const SKYBOX_SIDES: &[&[&str]] = &[&["rt", "side"], &["lf", "side"], &["up"], &["dn"], &["ft", "side"], &["bk", "side"]];
+
+        'build_sides: for dir_options in SKYBOX_SIDES {
+            for option in dir_options.iter() {
+                let path = format!("skybox/{skybox}{option}");
+                match load_texture(&bsp, load_context, &path).await {
+                    Ok(image) => {
+                        skybox_images.push(image);
+                        continue 'build_sides;
+                    }
+                    Err(e) => {
+                        debug!("Missing skybox image {path}: {e}");
+                    }
                 }
             }
+
+            warn!("Could not find side {dir_options:?} for skybox {skybox}");
         }
 
         Ok(BspAsset {
@@ -568,12 +636,22 @@ impl AssetLoader for BspAssetLoader {
     }
 }
 
-fn material_path(name: &str) -> String {
-    format!("materials/{}.vmt", name)
+fn material_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
+    let name = name.as_ref();
+    match Path::new(name).extension() {
+        None => Some(format!("materials/{}.vmt", name)),
+        Some(ext) if ext == OsStr::new("vmt") => Some(name.to_owned()),
+        _ => None,
+    }
 }
 
-fn texture_path(name: &str) -> String {
-    format!("materials/{}.vtf", name)
+fn texture_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
+    let name = name.as_ref();
+    match Path::new(name).extension() {
+        None => Some(format!("materials/{}.vtf", name)),
+        Some(ext) if ext == OsStr::new("vtf") => Some(name.to_owned()),
+        _ => None,
+    }
 }
 
 async fn load_texture<'a>(
@@ -597,10 +675,9 @@ async fn load_texture<'a>(
 
     // Ok(load_context.add_loaded_labeled_asset(path_str, image))
 
-    let path = texture_path(&name);
+    let path = texture_path(&name).unwrap_or_else(|| name.to_string());
     let Ok(data) = read_vpk_file(&bsp, load_context, &path).await else {
-        warn!("No such texture: {}", path);
-        bail!("no such texture: {}", path);
+        bail!("no such texture: {:?}", path);
     };
     let image = vtf::from_bytes(&data).expect("bad vtf");
     let mut image = image.highres_image.decode(0)?;
@@ -614,7 +691,21 @@ async fn load_texture<'a>(
         image = image.crop_imm(1, 1, 510, 510);
     };
 
-    let mut texture = Image::from_dynamic(image, true, RenderAssetUsages::default());
+    let mut texture = if image.width() == 0 || image.height() == 0 {
+        Image::new(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![0; 4],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+    } else {
+        Image::from_dynamic(image, true, RenderAssetUsages::RENDER_WORLD)
+    };
 
     if name.contains("skybox") {
         texture.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {

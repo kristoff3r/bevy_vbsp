@@ -45,11 +45,12 @@ fn load_vpk(
     mut commands: Commands,
 ) -> Result {
     info!("Loading VPKs: {:?}", added.paths);
-    let paths = added.paths.clone();
+    let paths = &added.paths;
     let vpk_reader = vpk_reader.clone();
+    let mut vpk_reader = vpk_reader.vpks.lock().unwrap();
     for path in paths {
-        let vpk = vpk::from_path(&path).unwrap();
-        vpk_reader.vpks.lock().unwrap().insert(path.clone(), vpk);
+        let vpk = vpk::from_path(path).unwrap();
+        vpk_reader.insert(path.clone(), vpk);
         info!("Loaded VPK: {:?}", path);
     }
 
@@ -74,6 +75,9 @@ pub struct VpkAssetReader {
 impl AssetReader for VpkAssetReader {
     async fn read(&self, path: &Path) -> Result<impl Reader, AssetReaderError> {
         let path_str = path.to_str().expect("Path is not valid UTF-8");
+        // VPK paths use `/` but Windows uses `\` by default, so we normalize here
+        let path_str = path_str.replace(std::path::is_separator, "/");
+        let path_str = &*path_str;
 
         let reader = 'block: {
             let vpks = self.vpks.lock().unwrap();

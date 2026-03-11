@@ -151,7 +151,7 @@ pub fn spawn_mdl_model(
                 let texture_path = format!(
                     "{}{}",
                     search_path.to_ascii_lowercase(),
-                    texture_info.name.to_ascii_lowercase()
+                    texture_info.name.to_ascii_lowercase(),
                 );
                 if let Some(mat) = bsp_asset.materials.get(&texture_path) {
                     material = Some(mat.clone());

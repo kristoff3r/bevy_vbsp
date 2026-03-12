@@ -772,6 +772,7 @@ dependencies = [
  "futures-io",
  "glam 0.30.10",
  "image",
+ "itertools 0.14.0",
  "pin-project",
  "serde",
  "tracing",

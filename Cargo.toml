@@ -30,6 +30,7 @@ cfg-if = "1.0"
 clap = "4.5"
 futures-io = "0.3"
 image = "0.25"
+itertools = "0.14"
 tracing = "0.1"
 pin-project = "1.0"
 serde = { version = "1.0", features = ["derive"] }

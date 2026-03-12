@@ -30,3 +30,4 @@ vmt-parser.workspace = true
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
+itertools.workspace = true

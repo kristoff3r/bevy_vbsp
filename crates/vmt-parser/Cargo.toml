@@ -5,7 +5,6 @@ edition = "2021"
 description = "Rust parser for valve vmt files."
 license = "MIT"
 repository = "https://codeberg.org/icewind/vmt-parser"
-rust-version = "1.70.0"
 
 [dependencies]
 thiserror = "2.0.11"

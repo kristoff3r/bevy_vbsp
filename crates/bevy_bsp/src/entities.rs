@@ -4,8 +4,14 @@ use avian3d::prelude::{Collider, Mass, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, PrimitiveTopology},
+    pbr::Lightmap,
     platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
+};
+use image::{DynamicImage, Rgba32FImage};
+use qbsp::{
+    data::LightmapStyle,
+    mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData},
 };
 use serde::Deserialize;
 
@@ -20,15 +26,52 @@ pub fn spawn_bsp_model(
     commands: &mut Commands,
     bsp_asset: &BspAsset,
     meshes: &mut Assets<Mesh>,
+    images: &mut Assets<Image>,
     model: vbsp::Handle<'_, vbsp::Model>,
     transform: Transform,
 ) {
-    let mut meshes_to_spawn: HashMap<String, Mesh> = HashMap::new();
+    let mut meshes_to_spawn: HashMap<(String, Option<Handle<Image>>), (Mesh, Option<Lightmap>)> =
+        HashMap::new();
 
-    for face in model.faces() {
+    let packer =
+        DefaultLightmapPacker::<PerStyleLightmapData<Rgba32FImage>>::new(Default::default());
+    let atlas = bsp_asset
+        .bsp
+        .compute_lightmap_atlas(packer)
+        .expect("Could not build atlas");
+
+    let styles_to_image = atlas
+        .data
+        .into_inner()
+        .into_iter()
+        .map(|(style, img)| {
+            let dynamic: DynamicImage = img.into();
+
+            dynamic.save(format!("lm-out-{style}.exr")).unwrap();
+
+            let image = Image::from_dynamic(dynamic, true, RenderAssetUsages::RENDER_WORLD);
+
+            (style, images.add(image))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let faces_with_idx = {
+        let start = model.first_face as usize;
+        let end = start + model.face_count as usize;
+        let bsp = &bsp_asset.bsp;
+
+        bsp.faces[start..end]
+            .iter()
+            .map(move |face| vbsp::Handle::new(bsp, face))
+            .zip(start..end)
+    };
+
+    for (face, idx) in faces_with_idx {
         if !face.is_visible() {
             continue;
         }
+
+        let lightmap_handle = styles_to_image.get(&LightmapStyle(face.styles[0])).cloned();
 
         let raw_vertices = face.vertex_positions().collect::<Vec<_>>();
         let vertices = raw_vertices
@@ -48,7 +91,8 @@ pub fn spawn_bsp_model(
 
         let texture = face.texture();
         let uvs = raw_vertices
-            .into_iter()
+            .iter()
+            .copied()
             .map(|pos| texture.uv(pos))
             .collect::<Vec<_>>();
 
@@ -61,18 +105,35 @@ pub fn spawn_bsp_model(
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
 
-        match meshes_to_spawn.entry(face.texture().name().to_ascii_lowercase()) {
+        let mesh = if let Some(lightmap_uvs) = atlas.uvs.get(&(idx as u32)) {
+            mesh.with_inserted_attribute(
+                Mesh::ATTRIBUTE_UV_1,
+                lightmap_uvs.into_iter().copied().collect::<Vec<_>>(),
+            )
+        } else {
+            mesh
+        };
+
+        match meshes_to_spawn.entry((
+            face.texture().name().to_ascii_lowercase(),
+            lightmap_handle.clone(),
+        )) {
             Entry::Occupied(mut entry) => {
                 let entry = entry.get_mut();
-                entry.merge(&mesh).unwrap();
+                entry.0.merge(&mesh).unwrap();
             }
             Entry::Vacant(entry) => {
-                entry.insert(mesh);
+                let lightmap = lightmap_handle.map(|image| Lightmap {
+                    image: image.clone(),
+                    ..Default::default()
+                });
+
+                entry.insert((mesh, lightmap));
             }
         }
     }
 
-    for (texture_name, mesh) in meshes_to_spawn {
+    for ((texture_name, _), (mesh, lightmap)) in meshes_to_spawn {
         if texture_name.contains("tools/") {
             continue;
         }
@@ -93,6 +154,10 @@ pub fn spawn_bsp_model(
             MeshMaterial3d(material.clone()),
             transform,
         ));
+
+        if let Some(lightmap) = lightmap {
+            entity.insert(lightmap);
+        }
 
         if let Some(collider) = collider {
             entity.insert((collider, RigidBody::Static));
@@ -119,12 +184,12 @@ pub fn spawn_mdl_model(
 
             for (idx, i) in strip.enumerate() {
                 let v = model.vertices()[i];
-                vertices.push(source_to_bevy(vbsp::Vector {
+                vertices.push(source_to_bevy(Vec3 {
                     x: v.position.x,
                     y: v.position.y,
                     z: v.position.z,
                 }));
-                normals.push(source_to_bevy(vbsp::Vector {
+                normals.push(source_to_bevy(Vec3 {
                     x: v.normal.x,
                     y: v.normal.y,
                     z: v.normal.z,

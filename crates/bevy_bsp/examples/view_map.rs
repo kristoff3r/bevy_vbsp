@@ -74,7 +74,8 @@ fn main() {
 
     app.init_state::<MapState>();
 
-    app.add_systems(Startup, (load_vpks, spawn_light));
+    // app.add_systems(Startup, (load_vpks, spawn_light));
+    app.add_systems(Startup, load_vpks);
 
     app.add_observer(load_map);
 
@@ -85,8 +86,13 @@ fn main() {
 
 #[cfg(windows)]
 const PREFIX: &str = "C:/Program Files (x86)/Steam/steamapps/common";
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const PREFIX: &str = concat!(env!("HOME"), "/.steam/steam/steamapps/common");
+#[cfg(target_os = "macos")]
+const PREFIX: &str = concat!(
+    env!("HOME"),
+    "/Library/Application Support/Steam/steamapps/common"
+);
 
 #[derive(Default, Copy, Clone)]
 struct Game {
@@ -174,6 +180,7 @@ fn spawn_light(mut commands: Commands) {
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
             shadows_enabled: true,
+            affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
         Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),

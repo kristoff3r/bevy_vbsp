@@ -116,8 +116,19 @@ fn mesh_from_face(
     let (texture_uvs, lightmap_uvs, vertices): (Vec<Vec2>, Vec<Vec2>, Vec<Vec3>) = face
         .vertex_positions()
         .map(|position| {
-            let lightmap_uv = lightmap_offset + face.texture().lightmap_uv(position)
-                - face.light_map_texture_min.as_vec2();
+            let mut lightmap_uv =
+                face.texture().lightmap_uv(position) - face.light_map_texture_min.as_vec2();
+
+            // HACK: This makes the displacement UVs correct, but there's probably some underlying issue
+            // that's causing this.
+            if face.displacement_index().is_some() {
+                lightmap_uv = Vec2::new(
+                    lightmap_uv.x,
+                    face.light_map_texture_size.y as f32 - lightmap_uv.y,
+                );
+            }
+
+            lightmap_uv += lightmap_offset;
 
             (
                 face.texture().uv(position),

@@ -13,8 +13,10 @@ bevy_vpk.workspace = true
 
 anyhow.workspace = true
 async-fs.workspace = true
+astcenc-rs.workspace = true
 futures-io.workspace = true
 image.workspace = true
+itertools.workspace = true
 glam.workspace = true
 pin-project.workspace = true
 serde.workspace = true

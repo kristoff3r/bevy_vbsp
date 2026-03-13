@@ -3,7 +3,6 @@ members = ["crates/*"]
 package.edition = "2024"
 resolver = "3"
 
-
 [workspace.dependencies]
 bevy_vpk = { path = "crates/bevy_vpk" }
 
@@ -15,18 +14,17 @@ glam = "0.30"
 # Valve
 # NOTE: Using fork that removes unnecessary noisy log lines
 vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
+vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
 vtf = "0.3"
 vbsp = { git = "https://github.com/eira-fransham/vbsp.git" }
-vpk = "0.3"
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
-vmt-parser = { path = "crates/vmt-parser" }
 qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
-# TODO: Some internals need to be exposed, so we have a vendored fork
-# vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
+vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
 
 # Other
 anyhow = "1.0"
 async-fs = "2.0"
+astcenc-rs = "0.2"
 cfg-if = "1.0"
 clap = "4.5"
 futures-io = "0.3"
@@ -36,11 +34,18 @@ tracing = "0.1"
 pin-project = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
-[patch."https://github.com/eira-fransham/qbsp.git"]
-qbsp = { path = "../qbsp" }
+# [patch."https://github.com/eira-fransham/qbsp.git"]
+# qbsp = { path = "../qbsp" }
 
-[patch."https://github.com/eira-fransham/vbsp.git"]
-vbsp = { path = "../vbsp" }
+# [patch."https://github.com/eira-fransham/vpk-rs.git"]
+# vpk = { path = "../vpk-rs" }
+
+# [patch."https://github.com/eira-fransham/vbsp.git"]
+# vbsp = { path = "../vbsp" }
+
+# TODO: Some internals need to be exposed, so we have a vendored fork
+[patch."https://codeberg.org/icewind/vmt-parser.git"]
+vmt-parser = { path = "crates/vmt-parser" }
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]

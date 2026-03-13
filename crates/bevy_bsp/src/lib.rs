@@ -345,7 +345,6 @@ impl AssetLoader for BspAssetLoader {
         let mut materials = HashMap::new();
 
         let default_texture: Handle<Image> = load_context.load("images/UVCheckerMap01-512.png");
-        // let default_texture: Handle<Image> = load_context.load("TestPattern.png");
         let cubemap: Handle<Image> = load_context.load("images/labeled_skybox.png");
         let default_material = StandardMaterial {
             base_color_texture: Some(default_texture.clone()),
@@ -484,24 +483,39 @@ impl AssetLoader for BspAssetLoader {
         let mut load_model_textures =
             async |load_context: &mut LoadContext<'_>, model: &vmdl::Model| {
                 'outer: for texture in model.textures() {
+                    let name = texture.name.to_ascii_lowercase();
+
+                    if materials.contains_key(&name) {
+                        continue;
+                    }
+
                     for search_path in &texture.search_paths {
-                        let name = format!(
-                            "{}{}",
-                            search_path.to_ascii_lowercase(),
-                            texture.name.to_ascii_lowercase()
-                        );
-                        if materials.contains_key(&name) {
-                            continue;
-                        }
-                        let Ok(material) = load_material(load_context, &name).await else {
-                            continue;
+                        let path = format!("{}{}", search_path.to_ascii_lowercase(), name);
+                        let mut material_load_context = load_context.begin_labeled_asset();
+                        let asset = match load_material(&mut material_load_context, &path).await {
+                            Ok(material) => material_load_context.finish(material),
+                            Err(e) => {
+                                warn!("Could not load model as VMT: {e}");
+                                let texture =
+                                    match load_texture(&bsp, &mut material_load_context, &path)
+                                        .await
+                                    {
+                                        Ok(texture) => texture,
+                                        Err(e) => {
+                                            warn!("Could not load model as VMT: {e}");
+                                            continue;
+                                        }
+                                    };
+                                material_load_context.finish(StandardMaterial::from(texture))
+                            }
                         };
-                        let material_load_context = load_context.begin_labeled_asset();
-                        let asset = material_load_context.finish(material);
+
                         let mat_handle = load_context
-                            .add_loaded_labeled_asset::<StandardMaterial>(format!("{name}"), asset);
-                        materials.insert(name.to_owned(), mat_handle.clone());
-                        break 'outer;
+                            .add_loaded_labeled_asset::<StandardMaterial>(name.clone(), asset);
+
+                        materials.insert(name, mat_handle.clone());
+
+                        continue 'outer;
                     }
 
                     warn!("No material found for model texture: {}", texture.name);
@@ -688,22 +702,6 @@ async fn load_texture<'a>(
     load_context: &mut LoadContext<'a>,
     name: &str,
 ) -> anyhow::Result<Handle<Image>> {
-    // todo: why no worky
-    // let mut load_context = load_context.begin_labeled_asset();
-    // let path_str = texture_path(name);
-    // let path = AssetPath::from_path(&PathBuf::from(&path_str))
-    //     .with_source("vpk")
-    //     .into_owned();
-
-    // let image = load_context
-    //     .loader()
-    //     .with_static_type()
-    //     .immediate()
-    //     .load(&path)
-    //     .await?;
-
-    // Ok(load_context.add_loaded_labeled_asset(path_str, image))
-
     let path = texture_path(&name).unwrap_or_else(|| name.to_string());
     let Ok(data) = read_vpk_file(&bsp, load_context, &path).await else {
         bail!("no such texture: {:?}", path);

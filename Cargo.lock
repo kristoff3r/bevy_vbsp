@@ -357,6 +357,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "astcenc-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aeca9a36277a4bb6206b4f9e42f3117b6916428b8787c48ef45646c7722a501"
+dependencies = [
+ "astcenc-sys",
+ "bitflags 2.11.0",
+ "half",
+ "num_cpus",
+]
+
+[[package]]
+name = "astcenc-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20632ae70d176f8de834fde138abd0b461d2a65892a907e35fae7af62fa5b850"
+dependencies = [
+ "bindgen",
+ "cc",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -783,6 +805,7 @@ name = "bevy_bsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astcenc-rs",
  "async-fs",
  "avian3d",
  "bevy",
@@ -1960,6 +1983,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -4341,6 +4366,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
+]
+
+[[package]]
 name = "num_enum"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5120,6 +5155,7 @@ checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 [[package]]
 name = "qbsp"
 version = "0.14.1"
+source = "git+https://github.com/eira-fransham/qbsp.git#ca4e05b4ece63cba883615144e31286c01222672"
 dependencies = [
  "bitflags 2.11.0",
  "derive_more",
@@ -5134,6 +5170,7 @@ dependencies = [
 [[package]]
 name = "qbsp_macros"
 version = "0.14.1"
+source = "git+https://github.com/eira-fransham/qbsp.git#ca4e05b4ece63cba883615144e31286c01222672"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6447,6 +6484,7 @@ dependencies = [
 [[package]]
 name = "vbsp"
 version = "0.9.1"
+source = "git+https://github.com/eira-fransham/vbsp.git#be5fc98d26860f215a8b147b26711bee71ee2890"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -6462,6 +6500,7 @@ dependencies = [
  "serde",
  "static_assertions",
  "thiserror 2.0.18",
+ "tracing",
  "vbsp-common",
  "vdf-reader 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "zip-lzma",
@@ -6470,6 +6509,7 @@ dependencies = [
 [[package]]
 name = "vbsp-common"
 version = "0.1.0"
+source = "git+https://github.com/eira-fransham/vbsp.git#be5fc98d26860f215a8b147b26711bee71ee2890"
 dependencies = [
  "binrw",
  "glam 0.30.10",
@@ -6557,8 +6597,7 @@ dependencies = [
 [[package]]
 name = "vpk"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e041d0558b49723e4fd634d93042329140e6ec1d6c4100b538a018b78bb1fa05"
+source = "git+https://github.com/eira-fransham/vpk-rs.git#4d9c114e4aa4a999ec23a754a1a012e974aa00a0"
 dependencies = [
  "ahash",
  "binrw",

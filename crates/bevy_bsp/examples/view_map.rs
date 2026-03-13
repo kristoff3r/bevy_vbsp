@@ -1,5 +1,6 @@
 use std::fmt;
 
+use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::view::Hdr;
@@ -290,6 +291,7 @@ fn setup_player(mut commands: Commands) {
         Camera3d::default(),
         Hdr,
         Bloom::default(),
+        Exposure::INDOOR,
         Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         FlyCam,
     ));

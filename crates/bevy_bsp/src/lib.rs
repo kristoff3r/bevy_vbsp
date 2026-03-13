@@ -22,10 +22,10 @@ use bevy::{
         Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
     },
 };
-use image::imageops::FilterType;
 use entities::spawn_bsp_model;
+use image::imageops::FilterType;
 use serde::{Deserialize, Serialize};
-use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags, Vector};
+use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 use tracing::instrument;
@@ -41,7 +41,7 @@ pub struct MapAssets {
     pub bsp: Handle<BspAsset>,
 }
 
-fn source_to_bevy(v: Vector) -> [f32; 3] {
+fn source_to_bevy(v: Vec3) -> [f32; 3] {
     [SCALE * v.y, SCALE * v.z, SCALE * v.x]
 }
 
@@ -76,9 +76,6 @@ pub fn spawn_map_entities(
 
     info!("Loaded BSP models: {}", bsp.models().count());
 
-    // for model in bsp.models() {
-    //     spawn_bsp_model(&mut commands, &bsp_asset, &mut meshes, model);
-    // }
     for raw_entity in &bsp.entities {
         let entity: GenericEntity = raw_entity.parse().unwrap();
         let class = entity.class.as_str();
@@ -92,6 +89,7 @@ pub fn spawn_map_entities(
                     &mut commands,
                     &bsp_asset,
                     &mut meshes,
+                    &mut images,
                     bsp.models().next().unwrap(),
                     Transform::IDENTITY,
                 );
@@ -104,11 +102,14 @@ pub fn spawn_map_entities(
                         .and_then(|e| e.as_value())
                         .and_then(|s| {
                             let mut parts = s.split(' ');
-                            Some(Vector {
-                                x: parts.next()?.parse().ok()?,
-                                y: parts.next()?.parse().ok()?,
-                                z: parts.next()?.parse().ok()?,
-                            })
+                            Some(
+                                [
+                                    parts.next()?.parse().ok()?,
+                                    parts.next()?.parse().ok()?,
+                                    parts.next()?.parse().ok()?,
+                                ]
+                                .into(),
+                            )
                         })
                         .unwrap_or_default();
 
@@ -138,6 +139,7 @@ pub fn spawn_map_entities(
                                 &mut commands,
                                 &bsp_asset,
                                 &mut meshes,
+                                &mut images,
                                 model,
                                 transform,
                             );
@@ -216,20 +218,26 @@ pub fn spawn_map_entities(
 
     if bsp_asset.skybox_images.len() == EXPECTED_SKYBOX_IMAGE_COUNT as usize {
         let (size, format) = {
-            bsp_asset.skybox_images.iter().map(|img_path| {
-                let image = images.get(img_path).unwrap();
+            bsp_asset
+                .skybox_images
+                .iter()
+                .map(|img_path| {
+                    let image = images.get(img_path).unwrap();
 
-                (image.size(), image.texture_descriptor.format)
-            }).reduce(|a, b| {
-                assert_eq!(a.1, b.1, "Mismatched texture formats in skybox");
+                    (image.size(), image.texture_descriptor.format)
+                })
+                .reduce(|a, b| {
+                    assert_eq!(a.1, b.1, "Mismatched texture formats in skybox");
 
-                (UVec2 {
-                    x: a.0.x.max(b.0.x),
-                    y: a.0.y.max(b.0.y),
-                },
-                a.1)
-            
-            }).unwrap()
+                    (
+                        UVec2 {
+                            x: a.0.x.max(b.0.x),
+                            y: a.0.y.max(b.0.y),
+                        },
+                        a.1,
+                    )
+                })
+                .unwrap()
         };
         let pixel_size = format.pixel_size().unwrap() as u32;
         // let (size, format) = (UVec2::splat(512), TextureFormat::Rgba8UnormSrgb);
@@ -442,9 +450,10 @@ impl AssetLoader for BspAssetLoader {
                 continue;
             }
 
-            // println!("Loading material: {}", name);
-
-            let material = load_material(load_context, &name).await?;
+            let Ok(material) = load_material(load_context, &name).await else {
+                warn!("Could not find material {name}");
+                continue;
+            };
 
             let material_load_context = load_context.begin_labeled_asset();
             let asset = material_load_context.finish(material);
@@ -532,11 +541,14 @@ impl AssetLoader for BspAssetLoader {
                     .and_then(|e| e.as_value())
                     .and_then(|s| {
                         let mut parts = s.split(' ');
-                        Some(Vector {
-                            x: parts.next()?.parse().ok()?,
-                            y: parts.next()?.parse().ok()?,
-                            z: parts.next()?.parse().ok()?,
-                        })
+                        Some(
+                            [
+                                parts.next()?.parse().ok()?,
+                                parts.next()?.parse().ok()?,
+                                parts.next()?.parse().ok()?,
+                            ]
+                            .into(),
+                        )
                     })
                     .unwrap_or_default();
 
@@ -589,7 +601,17 @@ impl AssetLoader for BspAssetLoader {
             models.insert(model_key.to_owned(), model_data);
         }
 
-        let worldspawn: GenericEntity = bsp.entities.iter().next().unwrap().parse().unwrap();
+        let worldspawn: GenericEntity = bsp
+            .entities
+            .iter()
+            .find(|ent| {
+                ent.properties()
+                    .find_map(|(k, v)| (k == "classname").then_some(v))
+                    == Some("worldspawn")
+            })
+            .unwrap()
+            .parse()
+            .unwrap();
 
         let skybox = worldspawn
             .data
@@ -600,7 +622,14 @@ impl AssetLoader for BspAssetLoader {
 
         let mut skybox_images = Vec::new();
 
-        const SKYBOX_SIDES: &[&[&str]] = &[&["rt", "side"], &["lf", "side"], &["up"], &["dn"], &["ft", "side"], &["bk", "side"]];
+        const SKYBOX_SIDES: &[&[&str]] = &[
+            &["rt", "side"],
+            &["lf", "side"],
+            &["up"],
+            &["dn"],
+            &["ft", "side"],
+            &["bk", "side"],
+        ];
 
         'build_sides: for dir_options in SKYBOX_SIDES {
             for option in dir_options.iter() {

@@ -27,6 +27,7 @@ vdf-reader.workspace = true
 vpk.workspace = true
 vtf.workspace = true
 vmt-parser.workspace = true
+qbsp.workspace = true
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }

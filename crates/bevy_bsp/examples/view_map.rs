@@ -1,20 +1,81 @@
-use std::default;
+use std::fmt;
 
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::view::Hdr;
-use bevy_bsp::entities::spawn_bsp_model;
-use bevy_bsp::{BspAsset, BspLoaderPlugin, MapAssets, spawn_map_entities};
+use bevy_bsp::{BspLoaderPlugin, MapAssets, spawn_map_entities};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
+use clap::{Parser, ValueEnum};
+
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+enum GamePreset {
+    #[value(alias("tf2"))]
+    TeamFortress2,
+    #[value(alias("revolution"))]
+    PortalRevolution,
+    #[default]
+    #[value(alias("css"))]
+    CounterStrikeSource,
+}
+
+impl From<GamePreset> for Game {
+    fn from(value: GamePreset) -> Self {
+        match value {
+            GamePreset::TeamFortress2 => Game::TF2,
+            GamePreset::PortalRevolution => Game::PORTAL_REVOLUTION,
+            GamePreset::CounterStrikeSource => Game::CSS,
+        }
+    }
+}
+
+impl fmt::Display for GamePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GamePreset::TeamFortress2 => write!(f, "tf2"),
+            GamePreset::PortalRevolution => write!(f, "revolution"),
+            GamePreset::CounterStrikeSource => write!(f, "css"),
+        }
+    }
+}
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(long, default_value_t)]
+    game: GamePreset,
+    #[arg(default_value = "test")]
+    map: String,
+}
+
 fn main() {
+    let args = Args::parse();
+
+    let game_preset = args.game;
+    let game: Game = args.game.into();
+    let map = args.map;
+    let map_assets_path = format!("maps/{game_preset}/{map}.bsp");
+
+    let load_vpks = move |mut commands: Commands| {
+        commands.trigger(LoadVpks {
+            paths: game.vpk_paths().into_iter().map(Into::into).collect(),
+        });
+    };
+
+    let load_map =
+        move |_event: On<LoadVPKDone>, mut commands: Commands, asset_server: Res<AssetServer>| {
+            commands.insert_resource(MapAssets {
+                bsp: asset_server.load(&map_assets_path),
+            });
+        };
+
     let mut app = App::new();
     // NOTE: VpkPlugin must come before DefaultPlugins due to registering an AssetSource
     app.add_plugins((VpkPlugin, DefaultPlugins, BspLoaderPlugin, PlayerPlugin));
 
     app.init_state::<MapState>();
 
-    app.add_systems(Startup, (load_vpks, spawn_light));
+    // app.add_systems(Startup, (load_vpks, spawn_light));
+    app.add_systems(Startup, load_vpks);
 
     app.add_observer(load_map);
 
@@ -23,11 +84,89 @@ fn main() {
     app.run();
 }
 
-const VPK_PATHS: &[&str] = &[
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/cstrike/cstrike_pak_dir.vpk",
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/hl2/hl2_textures_dir.vpk",
-    "/home/kris/.steam/steam/steamapps/common/Counter-Strike Source/hl2/hl2_misc_dir.vpk",
-];
+#[cfg(windows)]
+const PREFIX: &str = "C:/Program Files (x86)/Steam/steamapps/common";
+#[cfg(target_os = "linux")]
+const PREFIX: &str = concat!(env!("HOME"), "/.steam/steam/steamapps/common");
+#[cfg(target_os = "macos")]
+const PREFIX: &str = concat!(
+    env!("HOME"),
+    "/Library/Application Support/Steam/steamapps/common"
+);
+
+#[derive(Default, Copy, Clone)]
+struct Game {
+    name: &'static str,
+    asset_dir: &'static str,
+    vpk_prefix: Option<&'static str>,
+    vpks: &'static [&'static str],
+    extension: Option<&'static Game>,
+}
+
+const STANDARD_VPKS: [&str; 2] = ["textures", "misc"];
+
+impl Game {
+    const fn hl2(name: &'static str) -> Self {
+        Game {
+            name,
+            asset_dir: "hl2",
+            vpk_prefix: Some("hl2"),
+            vpks: &STANDARD_VPKS,
+            extension: None,
+        }
+    }
+
+    const TF2: Game = Game {
+        name: "Team Fortress 2",
+        asset_dir: "tf",
+        vpk_prefix: Some("tf2"),
+        vpks: &STANDARD_VPKS,
+        extension: Some(&Self::hl2("Team Fortress 2")),
+    };
+
+    const CSS: Game = Game {
+        name: "Counter-Strike Source",
+        asset_dir: "cstrike",
+        vpk_prefix: Some("cstrike"),
+        vpks: &["pak"],
+        extension: Some(&Self::hl2("Counter-Strike Source")),
+    };
+
+    const PORTAL_REVOLUTION: Game = Game {
+        name: "Portal Revolution",
+        asset_dir: "revolution",
+        vpk_prefix: None,
+        vpks: &["pak01"],
+        extension: None,
+    };
+
+    fn resolve(&self, vpk: &str) -> String {
+        let Self {
+            name,
+            asset_dir,
+            vpk_prefix,
+            ..
+        } = self;
+
+        let vpk_name = match vpk_prefix {
+            Some(prefix) => format_args!("{}_{vpk}", *prefix),
+            None => format_args!("{vpk}"),
+        };
+
+        format!("{PREFIX}/{name}/{asset_dir}/{vpk_name}_dir.vpk")
+    }
+
+    fn vpk_paths(&self) -> Vec<String> {
+        let mut paths = self
+            .extension
+            .map(|ext| ext.vpk_paths())
+            .unwrap_or_default();
+
+        paths.extend(self.vpks.iter().map(|vpk| self.resolve(vpk)));
+
+        paths
+    }
+}
 
 #[derive(States, Default, PartialEq, PartialOrd, Eq, Ord, Hash, Clone, Copy, Debug)]
 pub enum MapState {
@@ -41,22 +180,11 @@ fn spawn_light(mut commands: Commands) {
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
             shadows_enabled: true,
+            affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
         Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-}
-
-fn load_vpks(mut commands: Commands) {
-    commands.trigger(LoadVpks {
-        paths: VPK_PATHS.iter().map(|p| p.into()).collect(),
-    });
-}
-
-fn load_map(_event: On<LoadVPKDone>, mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(MapAssets {
-        bsp: asset_server.load("maps/css/aim_map.bsp"),
-    });
 }
 
 fn check_map_loaded(

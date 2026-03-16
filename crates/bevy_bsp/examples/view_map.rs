@@ -1,5 +1,7 @@
 use std::fmt;
 
+use avian3d::PhysicsPlugins;
+use avian3d::prelude::{Collider, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -71,16 +73,29 @@ fn main() {
 
     let mut app = App::new();
     // NOTE: VpkPlugin must come before DefaultPlugins due to registering an AssetSource
-    app.add_plugins((VpkPlugin, DefaultPlugins, BspLoaderPlugin, PlayerPlugin));
-
-    app.init_state::<MapState>();
-
-    // app.add_systems(Startup, (load_vpks, spawn_light));
-    app.add_systems(Startup, load_vpks);
-
-    app.add_observer(load_map);
-
-    app.add_systems(Update, check_map_loaded.run_if(in_state(MapState::Loading)));
+    app.add_plugins((
+        VpkPlugin,
+        DefaultPlugins,
+        BspLoaderPlugin,
+        PlayerPlugin,
+        PhysicsPlugins::default(),
+    ))
+    .insert_resource(GlobalAmbientLight {
+        color: ClearColor::default().0,
+        brightness: 10000.0,
+        affects_lightmapped_meshes: false,
+    })
+    .init_resource::<PhysAssets>()
+    .init_state::<MapState>()
+    .add_systems(Startup, (load_vpks, spawn_light))
+    .add_observer(load_map)
+    .add_systems(
+        Update,
+        (
+            check_map_loaded.run_if(in_state(MapState::Loading)),
+            spawn_cube,
+        ),
+    );
 
     app.run();
 }
@@ -177,6 +192,7 @@ pub enum MapState {
 }
 
 fn spawn_light(mut commands: Commands) {
+    return;
     commands.spawn((
         DirectionalLight {
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
@@ -231,6 +247,38 @@ impl Default for MovementSettings {
     }
 }
 
+#[derive(Resource)]
+struct PhysAssets {
+    pub cube_bundle: (
+        Collider,
+        Mesh3d,
+        MeshMaterial3d<StandardMaterial>,
+        RigidBody,
+    ),
+}
+
+impl FromWorld for PhysAssets {
+    fn from_world(world: &mut World) -> Self {
+        const CUBE_SIZE: f32 = 0.5;
+
+        let asset_server = world.resource::<AssetServer>();
+        let mesh = Mesh3d(asset_server.add(Cuboid::from_size(Vec3::splat(CUBE_SIZE)).into()));
+        let material = MeshMaterial3d(asset_server.add(StandardMaterial {
+            base_color: Color::WHITE,
+            ..Default::default()
+        }));
+
+        Self {
+            cube_bundle: (
+                Collider::cuboid(0.5, 0.5, 0.5),
+                mesh,
+                material,
+                RigidBody::Dynamic,
+            ),
+        }
+    }
+}
+
 /// Key configuration
 #[derive(Resource)]
 pub struct KeyBindings {
@@ -241,6 +289,7 @@ pub struct KeyBindings {
     pub move_ascend: KeyCode,
     pub move_descend: KeyCode,
     pub toggle_grab_cursor: KeyCode,
+    pub spawn_cube: KeyCode,
 }
 
 impl Default for KeyBindings {
@@ -253,8 +302,56 @@ impl Default for KeyBindings {
             move_ascend: KeyCode::Space,
             move_descend: KeyCode::ControlLeft,
             toggle_grab_cursor: KeyCode::Escape,
+            spawn_cube: KeyCode::KeyP,
         }
     }
+}
+
+fn spawn_cube(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+    phys: Res<PhysAssets>,
+    query: SpatialQuery,
+    camera: Query<&GlobalTransform, With<Camera>>,
+) {
+    if !keys.just_pressed(key_bindings.spawn_cube) {
+        return;
+    }
+
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+
+    let cam_origin = camera.translation();
+    let cam_dir = camera.forward();
+
+    let Some(hit_point) = query.cast_ray(
+        cam_origin,
+        cam_dir,
+        100.,
+        false,
+        &SpatialQueryFilter::DEFAULT,
+    ) else {
+        println!("No target");
+        return;
+    };
+
+    let intersection = cam_origin
+        + cam_dir * hit_point.distance
+        + phys
+            .cube_bundle
+            .0
+            .shape()
+            .compute_local_aabb()
+            .half_extents()
+            .length()
+            * hit_point.normal;
+
+    commands.spawn((
+        Transform::from_translation(intersection),
+        phys.cube_bundle.clone(),
+    ));
 }
 
 /// Used in queries when you want flycams and not other cameras

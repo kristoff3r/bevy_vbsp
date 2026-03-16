@@ -101,6 +101,7 @@ fn astc_convert(image: &Rgba32FImage) -> Image {
 }
 
 fn mesh_from_face(
+    model_origin: Vec3,
     face_idx: u32,
     face: &vbsp::Handle<'_, vbsp::FaceV2>,
     atlas_size: Vec2,
@@ -115,25 +116,14 @@ fn mesh_from_face(
 
     let (texture_uvs, lightmap_uvs, vertices): (Vec<Vec2>, Vec<Vec2>, Vec<Vec3>) = face
         .vertex_positions()
-        .map(|position| {
-            let mut lightmap_uv =
-                face.texture().lightmap_uv(position) - face.light_map_texture_min.as_vec2();
-
-            // HACK: This makes the displacement UVs correct, but there's probably some underlying issue
-            // that's causing this.
-            if face.displacement_index().is_some() {
-                lightmap_uv = Vec2::new(
-                    lightmap_uv.x,
-                    face.light_map_texture_size.y as f32 - lightmap_uv.y,
-                );
-            }
-
+        .zip(face.lightmap_uvs())
+        .map(|(position, mut lightmap_uv)| {
             lightmap_uv += lightmap_offset;
 
             (
                 face.texture().uv(position),
                 lightmap_uv_factor * lightmap_uv / atlas_size,
-                Vec3::from(source_to_bevy(position)),
+                Vec3::from(source_to_bevy(model_origin + position)),
             )
         })
         .multiunzip();
@@ -170,7 +160,7 @@ pub fn spawn_bsp_model(
             ASTC_BLOCK_SIZE.y
         }
     } else {
-        1
+        4
     };
 
     let mut meshes_to_spawn: HashMap<(String, Option<Handle<Image>>), (Mesh, Option<Lightmap>)> =
@@ -220,6 +210,7 @@ pub fn spawn_bsp_model(
             .unwrap_or(Vec2::splat(1.));
 
         let Some(mesh) = mesh_from_face(
+            model.origin,
             face_idx as _,
             &face,
             atlas_size.as_vec2(),
@@ -261,7 +252,7 @@ pub fn spawn_bsp_model(
                 bsp_asset.default_material.0.clone()
             });
         debug!("Spawning model texture={texture_name}");
-        // let collider = Collider::trimesh_from_mesh(&mesh);
+        let collider = Collider::trimesh_from_mesh(&mesh);
         let mesh_handle = meshes.add(mesh);
 
         let mut entity = commands.spawn((
@@ -274,11 +265,11 @@ pub fn spawn_bsp_model(
             entity.insert(lightmap);
         }
 
-        // if let Some(collider) = collider {
-        //     entity.insert((collider, RigidBody::Static));
-        // } else {
-        //     warn!("No collider for texture: {}", texture_name);
-        // }
+        if let Some(collider) = collider {
+            entity.insert((collider, RigidBody::Static));
+        } else {
+            warn!("No collider for texture: {}", texture_name);
+        }
     }
 }
 

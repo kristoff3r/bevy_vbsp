@@ -3,17 +3,18 @@ name = "bevy_vpk"
 version = "0.1.0"
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 bevy.workspace = true
 
-# Valve formats
 vpk.workspace = true
 vdf-reader.workspace = true
 vmt-parser.workspace = true
 vmdl.workspace = true
 vtf.workspace = true
 
-# Misc
 futures-io.workspace = true
 async-fs.workspace = true
 pin-project.workspace = true

@@ -220,15 +220,14 @@ impl PatchMaterial {
     ///
     /// The base material needs to be lowercase.
     pub fn apply(&self, base: &str) -> Result<Material, VdfError> {
-        let mut material = Table::load_from_str(&base)?;
+        let mut material = Table::load_from_str(base)?;
 
         let material_values = match material.iter_mut().next() {
             Some((_, Entry::Table(table))) => table,
             _ => {
                 return Err(VdfError::from(UnknownError::from(
                     "included vdf doesn't look like a material",
-                ))
-                .into())
+                )))
             }
         };
 
@@ -236,7 +235,7 @@ impl PatchMaterial {
             material_values.insert(key.clone(), value.clone());
         }
 
-        Ok(from_entry(Entry::Table(material))?)
+        from_entry(Entry::Table(material))
     }
 }
 

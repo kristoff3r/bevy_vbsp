@@ -374,7 +374,7 @@ impl AssetLoader for BspAssetLoader {
                 }
 
                 let texture = if let Some(name) = vmt.base_texture() {
-                    if let Ok(texture) = load_texture(&bsp, load_context, &name).await {
+                    if let Ok(texture) = load_texture(&bsp, load_context, name).await {
                         Some(texture)
                     } else {
                         warn!("Using default texture for missing texture: {}", name);
@@ -387,7 +387,7 @@ impl AssetLoader for BspAssetLoader {
                 };
 
                 let bump_map = if let Some(name) = vmt.bump_map() {
-                    load_texture(&bsp, load_context, &name).await.ok()
+                    load_texture(&bsp, load_context, name).await.ok()
                 } else {
                     None
                 };
@@ -458,7 +458,7 @@ impl AssetLoader for BspAssetLoader {
             let asset = material_load_context.finish(material);
 
             let mat_handle =
-                load_context.add_loaded_labeled_asset::<StandardMaterial>(format!("{name}"), asset);
+                load_context.add_loaded_labeled_asset::<StandardMaterial>(name.to_string(), asset);
 
             materials.insert(name.to_owned(), mat_handle.clone());
         }
@@ -527,22 +527,22 @@ impl AssetLoader for BspAssetLoader {
         let mut ct_spawn_points = Vec::new();
         for entity in &bsp.entities {
             let entity: GenericEntity = entity.parse().unwrap();
-            if let Some(model) = entity.data.get("model") {
-                if let Some(model_key) = model.as_value() {
-                    let model_key = model_key.deref();
-                    if !model_key.starts_with("*") && !model_key.ends_with("vmt") {
-                        if models.contains_key(model_key) {
-                            continue;
-                        }
-                        match load_model(load_context, model_key).await {
-                            Ok(model_data) => {
-                                load_model_textures(load_context, &model_data).await;
+            if let Some(model) = entity.data.get("model")
+                && let Some(model_key) = model.as_value()
+            {
+                let model_key = model_key.deref();
+                if !model_key.starts_with("*") && !model_key.ends_with("vmt") {
+                    if models.contains_key(model_key) {
+                        continue;
+                    }
+                    match load_model(load_context, model_key).await {
+                        Ok(model_data) => {
+                            load_model_textures(load_context, &model_data).await;
 
-                                models.insert(model_key.to_owned(), model_data);
-                            }
-                            Err(e) => {
-                                warn!("Could not spawn model: {e}");
-                            }
+                            models.insert(model_key.to_owned(), model_data);
+                        }
+                        Err(e) => {
+                            warn!("Could not spawn model: {e}");
                         }
                     }
                 }
@@ -703,7 +703,7 @@ async fn load_texture<'a>(
     name: &str,
 ) -> anyhow::Result<Handle<Image>> {
     let path = texture_path(&name).unwrap_or_else(|| name.to_string());
-    let Ok(data) = read_vpk_file(&bsp, load_context, &path).await else {
+    let Ok(data) = read_vpk_file(bsp, load_context, &path).await else {
         bail!("no such texture: {:?}", path);
     };
     let image = vtf::from_bytes(&data).expect("bad vtf");
@@ -763,7 +763,7 @@ async fn read_vpk_file(
     let asset_path = base_path.resolve(path).unwrap();
     if let Ok(data) = load_context.read_asset_bytes(asset_path).await {
         Ok(data)
-    } else if let Ok(Some(data)) = bsp.pack.get(&path) {
+    } else if let Ok(Some(data)) = bsp.pack.get(path) {
         Ok(data)
     } else {
         bail!("file not found: {}", path);

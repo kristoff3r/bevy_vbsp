@@ -112,7 +112,7 @@ fn mesh_from_face(
         return None;
     }
 
-    let lightmap_offset = lightmap_uv_offsets[&(face_idx as u32)];
+    let lightmap_offset = lightmap_uv_offsets[&{ face_idx }];
 
     let (texture_uvs, lightmap_uvs, vertices): (Vec<Vec2>, Vec<Vec2>, Vec<Vec3>) = face
         .vertex_positions()

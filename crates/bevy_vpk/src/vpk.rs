@@ -204,8 +204,7 @@ impl AsyncRead for VpkEntryReader {
         let preload_data_len = self.preload_data.len();
         if self.bytes_read < preload_data_len {
             let n = ready!(
-                Pin::new(&mut &self.preload_data.as_slice()[self.bytes_read as usize..])
-                    .poll_read(cx, buf)
+                Pin::new(&mut &self.preload_data.as_slice()[self.bytes_read..]).poll_read(cx, buf)
             )?;
             self.bytes_read += n;
             return Poll::Ready(Ok(n));

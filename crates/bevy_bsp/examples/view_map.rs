@@ -3,11 +3,14 @@ use std::fmt;
 use avian3d::PhysicsPlugins;
 use avian3d::prelude::{Collider, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
+use bevy::camera::visibility::RenderLayers;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
 use bevy::render::view::Hdr;
-use bevy_bsp::{BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
+use bevy_bsp::{
+    BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, bevy_to_source, spawn_map_entities,
+};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
 use clap::builder::PossibleValue;
@@ -167,6 +170,7 @@ fn main() {
                 bsp: asset_server.load(&map_assets_path),
             });
         };
+
     let check_map_loaded =
         move |mut commands: Commands,
               map_assets: Res<MapAssets>,
@@ -204,6 +208,7 @@ fn main() {
         (
             check_map_loaded.run_if(in_state(MapState::Loading)),
             spawn_cube,
+            set_player_visleaf,
         ),
     );
 
@@ -318,6 +323,7 @@ fn spawn_light(mut commands: Commands) {
 use bevy::ecs::message::MessageCursor;
 use bevy::input::mouse::MouseMotion;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use itertools::Itertools;
 
 pub mod prelude {
     pub use crate::*;
@@ -407,17 +413,17 @@ impl Default for KeyBindings {
 
 fn spawn_cube(
     mut commands: Commands,
+    camera: Option<Single<&GlobalTransform, With<Camera>>>,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
     phys: Res<PhysAssets>,
     query: SpatialQuery,
-    camera: Query<&GlobalTransform, With<Camera>>,
 ) {
     if !keys.just_pressed(key_bindings.spawn_cube) {
         return;
     }
 
-    let Ok(camera) = camera.single() else {
+    let Some(camera) = camera else {
         return;
     };
 
@@ -452,6 +458,32 @@ fn spawn_cube(
     ));
 }
 
+fn set_player_visleaf(
+    camera: Option<Single<(&GlobalTransform, &mut RenderLayers), With<Camera>>>,
+    map_assets: Res<MapAssets>,
+    bsp_asset_data: Res<Assets<BspAsset>>,
+) {
+    let Some(mut camera) = camera else {
+        return;
+    };
+
+    let Some(bsp) = bsp_asset_data.get(&map_assets.bsp) else {
+        return;
+    };
+
+    let layer = bsp
+        .bsp
+        .leaf_at(bevy_to_source(camera.0.translation()))
+        // TODO: The `+ 1` should be handled better, but we can't use `usize::MAX` since `RenderLayers` is
+        // essentially a bitvec and that will make every render layer type huge.
+        .map(|leaf| leaf.cluster as usize + 1)
+        .unwrap_or_default();
+
+    if !camera.1.iter().contains(&layer) {
+        *camera.1 = RenderLayers::from_layers(&[layer, 0]);
+    }
+}
+
 /// Used in queries when you want flycams and not other cameras
 /// A marker component used in queries when you want flycams and not other cameras
 #[derive(Component)]
@@ -484,6 +516,7 @@ fn initial_grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<Primar
 fn setup_player(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
+        RenderLayers::layer(0),
         Hdr,
         Bloom::default(),
         Exposure::INDOOR,

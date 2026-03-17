@@ -35,6 +35,8 @@ use tracing::instrument;
 
 use entities::spawn_mdl_model;
 
+use crate::entities::spawn_worldspawn;
+
 pub struct BspLoaderPlugin;
 
 pub const SCALE: f32 = 0.03125;
@@ -44,8 +46,12 @@ pub struct MapAssets {
     pub bsp: Handle<BspAsset>,
 }
 
-fn source_to_bevy(v: Vec3) -> [f32; 3] {
-    [SCALE * v.y, SCALE * v.z, SCALE * v.x]
+pub fn source_to_bevy(v: Vec3) -> Vec3 {
+    Vec3::new(v.y, v.z, v.x) * SCALE
+}
+
+pub fn bevy_to_source(v: Vec3) -> Vec3 {
+    Vec3::new(v.z, v.x, v.y) / SCALE
 }
 
 fn angles_to_bevy(angles: &Angles) -> Quat {
@@ -126,19 +132,25 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
     } else {
         let pixels = image
             .rows()
-            .flat_map(|row| {
-                row.copied().chain(std::iter::repeat_n(
-                    Rgba::<f32>([0., 0., 0., 1.]),
-                    (width - image.width()) as usize,
-                ))
+            .enumerate()
+            .flat_map(|(row_idx, row)| {
+                let last = *image.get_pixel(image.width() - 1, row_idx as _);
+                row.copied()
+                    .chain(std::iter::repeat_n(last, (width - image.width()) as usize))
             })
-            .chain(
+            .chain({
+                let last = *image.get_pixel(image.width() - 1, image.height() - 1);
                 std::iter::repeat_n(
-                    std::iter::repeat_n(Rgba::<f32>([0., 0., 0., 1.]), width as usize),
+                    image
+                        .rows()
+                        .last()
+                        .unwrap()
+                        .copied()
+                        .chain(std::iter::repeat_n(last, (width - image.width()) as usize)),
                     (height - image.height()) as usize,
                 )
-                .flatten(),
-            )
+                .flatten()
+            })
             .flat_map(|pixel| pixel.0)
             .collect::<Vec<_>>();
 
@@ -256,6 +268,8 @@ pub fn spawn_map_entities(
         }
         match class {
             "worldspawn" => {
+                // TODO: `spawn_worldspawn` (which uses the BSP tree to build meshes) seems to be broken,
+                // not all faces appear to be part of the tree.
                 spawn_bsp_model(
                     &mut commands,
                     &bsp_asset,

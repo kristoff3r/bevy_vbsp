@@ -43,8 +43,8 @@ serde = { version = "1.0", features = ["derive"] }
 # [patch."https://github.com/eira-fransham/vmdl.git"]
 # vmdl = { path = "../vmdl" }
 
-# [patch."https://github.com/eira-fransham/vbsp.git"]
-# vbsp = { path = "../vbsp" }
+[patch."https://github.com/eira-fransham/vbsp.git"]
+vbsp = { path = "../vbsp" }
 
 # TODO: Some internals need to be exposed, so we have a vendored fork
 [patch."https://codeberg.org/icewind/vmt-parser.git"]

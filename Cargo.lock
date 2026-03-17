@@ -2023,7 +2023,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -2031,6 +2031,15 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bit_field"
@@ -2135,15 +2144,6 @@ name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
-
-[[package]]
-name = "bv"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8834bb1d8ee5dc048ee3124f2c7c1afcc6bc9aed03f11e9dfd8c69470a5db340"
-dependencies = [
- "feature-probe",
-]
 
 [[package]]
 name = "bytemuck"
@@ -3027,12 +3027,6 @@ checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
 ]
-
-[[package]]
-name = "feature-probe"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "835a3dc7d1ec9e75e2b5fb4ba75396837112d2060b03f7d43bc1897c7f7211da"
 
 [[package]]
 name = "find-msvc-tools"
@@ -6493,13 +6487,12 @@ dependencies = [
 [[package]]
 name = "vbsp"
 version = "0.9.1"
-source = "git+https://github.com/eira-fransham/vbsp.git#cbdad3cc7bf3773efb5afafadea41efb3f790285"
 dependencies = [
  "ahash",
  "arrayvec",
  "binrw",
+ "bit-vec 0.9.1",
  "bitflags 2.11.0",
- "bv",
  "glam 0.30.10",
  "image",
  "itertools 0.14.0",
@@ -6518,7 +6511,6 @@ dependencies = [
 [[package]]
 name = "vbsp-common"
 version = "0.1.0"
-source = "git+https://github.com/eira-fransham/vbsp.git#cbdad3cc7bf3773efb5afafadea41efb3f790285"
 dependencies = [
  "binrw",
  "glam 0.30.10",
@@ -6917,7 +6909,7 @@ checksum = "27a75de515543b1897b26119f93731b385a19aea165a1ec5f0e3acecc229cae7"
 dependencies = [
  "arrayvec",
  "bit-set",
- "bit-vec",
+ "bit-vec 0.8.0",
  "bitflags 2.11.0",
  "bytemuck",
  "cfg_aliases",

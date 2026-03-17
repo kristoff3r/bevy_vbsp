@@ -5,10 +5,12 @@ use avian3d::prelude::{Collider, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::render_resource::AstcBlock;
 use bevy::render::view::Hdr;
-use bevy_bsp::{BspLoaderPlugin, MapAssets, spawn_map_entities};
+use bevy_bsp::{BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
+use clap::builder::PossibleValue;
 use clap::{Parser, ValueEnum};
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default)]
@@ -42,12 +44,105 @@ impl fmt::Display for GamePreset {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum AstcBlockSizeArg {
+    B4x4,
+    B5x4,
+    B5x5,
+    B6x5,
+    B6x6,
+    B8x5,
+    B8x6,
+    B8x8,
+    B10x5,
+    B10x6,
+    B10x8,
+    B10x10,
+    B12x10,
+    B12x12,
+}
+
+impl AstcBlockSizeArg {
+    fn name(&self) -> &'static str {
+        match self {
+            AstcBlockSizeArg::B4x4 => "4x4",
+            AstcBlockSizeArg::B5x4 => "5x4",
+            AstcBlockSizeArg::B5x5 => "5x5",
+            AstcBlockSizeArg::B6x5 => "6x5",
+            AstcBlockSizeArg::B6x6 => "6x6",
+            AstcBlockSizeArg::B8x5 => "8x5",
+            AstcBlockSizeArg::B8x6 => "8x6",
+            AstcBlockSizeArg::B8x8 => "8x8",
+            AstcBlockSizeArg::B10x5 => "10x5",
+            AstcBlockSizeArg::B10x6 => "10x6",
+            AstcBlockSizeArg::B10x8 => "10x8",
+            AstcBlockSizeArg::B10x10 => "10x10",
+            AstcBlockSizeArg::B12x10 => "12x10",
+            AstcBlockSizeArg::B12x12 => "12x12",
+        }
+    }
+}
+
+impl clap::ValueEnum for AstcBlockSizeArg {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            AstcBlockSizeArg::B4x4,
+            AstcBlockSizeArg::B5x4,
+            AstcBlockSizeArg::B5x5,
+            AstcBlockSizeArg::B6x5,
+            AstcBlockSizeArg::B6x6,
+            AstcBlockSizeArg::B8x5,
+            AstcBlockSizeArg::B8x6,
+            AstcBlockSizeArg::B8x8,
+            AstcBlockSizeArg::B10x5,
+            AstcBlockSizeArg::B10x6,
+            AstcBlockSizeArg::B10x8,
+            AstcBlockSizeArg::B10x10,
+            AstcBlockSizeArg::B12x10,
+            AstcBlockSizeArg::B12x12,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(PossibleValue::new(self.name()))
+    }
+}
+
+impl From<AstcBlockSizeArg> for AstcBlock {
+    fn from(value: AstcBlockSizeArg) -> Self {
+        match value {
+            AstcBlockSizeArg::B4x4 => AstcBlock::B4x4,
+            AstcBlockSizeArg::B5x4 => AstcBlock::B5x4,
+            AstcBlockSizeArg::B5x5 => AstcBlock::B5x5,
+            AstcBlockSizeArg::B6x5 => AstcBlock::B6x5,
+            AstcBlockSizeArg::B6x6 => AstcBlock::B6x6,
+            AstcBlockSizeArg::B8x5 => AstcBlock::B8x5,
+            AstcBlockSizeArg::B8x6 => AstcBlock::B8x6,
+            AstcBlockSizeArg::B8x8 => AstcBlock::B8x8,
+            AstcBlockSizeArg::B10x5 => AstcBlock::B10x5,
+            AstcBlockSizeArg::B10x6 => AstcBlock::B10x6,
+            AstcBlockSizeArg::B10x8 => AstcBlock::B10x8,
+            AstcBlockSizeArg::B10x10 => AstcBlock::B10x10,
+            AstcBlockSizeArg::B12x10 => AstcBlock::B12x10,
+            AstcBlockSizeArg::B12x12 => AstcBlock::B12x12,
+        }
+    }
+}
+
+impl std::fmt::Display for AstcBlockSizeArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long, default_value_t)]
     game: GamePreset,
     #[arg(default_value = "test")]
     map: String,
+    #[arg(long)]
+    astc: Option<AstcBlockSizeArg>,
 }
 
 fn main() {
@@ -57,6 +152,8 @@ fn main() {
     let game: Game = args.game.into();
     let map = args.map;
     let map_assets_path = format!("maps/{game_preset}/{map}.bsp");
+
+    let astc_block_size = args.astc.map(Into::into);
 
     let load_vpks = move |mut commands: Commands| {
         commands.trigger(LoadVpks {
@@ -69,6 +166,19 @@ fn main() {
             commands.insert_resource(MapAssets {
                 bsp: asset_server.load(&map_assets_path),
             });
+        };
+    let check_map_loaded =
+        move |mut commands: Commands,
+              map_assets: Res<MapAssets>,
+              asset_server: Res<AssetServer>,
+              mut next_state: ResMut<NextState<MapState>>| {
+            if asset_server.is_loaded(&map_assets.bsp) {
+                commands.run_system_cached_with(
+                    spawn_map_entities,
+                    LightmapSettings { astc_block_size },
+                );
+                next_state.set(MapState::Done);
+            }
         };
 
     let mut app = App::new();
@@ -202,18 +312,6 @@ fn spawn_light(mut commands: Commands) {
         },
         Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-}
-
-fn check_map_loaded(
-    mut commands: Commands,
-    map_assets: Res<MapAssets>,
-    asset_server: Res<AssetServer>,
-    mut next_state: ResMut<NextState<MapState>>,
-) {
-    if asset_server.is_loaded(&map_assets.bsp) {
-        commands.run_system_cached(spawn_map_entities);
-        next_state.set(MapState::Done);
-    }
 }
 
 // Inlined version of bevy_flycam

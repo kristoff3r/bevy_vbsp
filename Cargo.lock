@@ -526,9 +526,9 @@ dependencies = [
 
 [[package]]
 name = "avian3d"
-version = "0.6.0-rc.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59554a1f936b55ade114a5f6b68bf718060133296a170c5107ffe73abfa65ea9"
+checksum = "ccf73a986c8a79fa00483d75ccb6fb306bf37eef2681c1fdd86f0ae8afd07d46"
 dependencies = [
  "approx 0.5.1",
  "avian_derive",
@@ -539,7 +539,6 @@ dependencies = [
  "bitflags 2.11.0",
  "derive_more",
  "disqualified",
- "glam 0.31.1",
  "glam_matrix_extras",
  "itertools 0.14.0",
  "obvhs",
@@ -813,6 +812,7 @@ dependencies = [
  "clap",
  "futures-io",
  "glam 0.30.10",
+ "humansize",
  "image",
  "itertools 0.14.0",
  "pin-project",
@@ -3574,6 +3574,15 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "humansize"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb51c9a029ddc91b07a787f1d86b53ccfa49b0e86688c946ebe8d3555685dd7"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "id-arena"
@@ -6484,7 +6493,7 @@ dependencies = [
 [[package]]
 name = "vbsp"
 version = "0.9.1"
-source = "git+https://github.com/eira-fransham/vbsp.git#c2d49af040266147342e5ee36179ce0234be2bf3"
+source = "git+https://github.com/eira-fransham/vbsp.git#cbdad3cc7bf3773efb5afafadea41efb3f790285"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -6509,7 +6518,7 @@ dependencies = [
 [[package]]
 name = "vbsp-common"
 version = "0.1.0"
-source = "git+https://github.com/eira-fransham/vbsp.git#c2d49af040266147342e5ee36179ce0234be2bf3"
+source = "git+https://github.com/eira-fransham/vbsp.git#cbdad3cc7bf3773efb5afafadea41efb3f790285"
 dependencies = [
  "binrw",
  "glam 0.30.10",
@@ -6557,7 +6566,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vmdl"
 version = "0.3.0"
-source = "git+https://github.com/eira-fransham/vmdl.git#b9883ba208dba9cfa40e96d26f1c04836ae78e06"
+source = "git+https://github.com/eira-fransham/vmdl.git#3b89648e7b5a6de290571ca8951d8f94cc4d9572"
 dependencies = [
  "arrayvec",
  "bitflags 2.11.0",

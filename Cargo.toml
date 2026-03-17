@@ -10,7 +10,7 @@ type-complexity = "allow"
 bevy_vpk = { path = "crates/bevy_vpk" }
 
 bevy = "0.18"
-avian3d = "0.6.0-rc.0"
+avian3d = "0.6.0"
 glam = "0.30"
 
 # NOTE: Using fork that removes unnecessary noisy log lines
@@ -39,6 +39,9 @@ serde = { version = "1.0", features = ["derive"] }
 
 # [patch."https://github.com/eira-fransham/vpk-rs.git"]
 # vpk = { path = "../vpk-rs" }
+
+# [patch."https://github.com/eira-fransham/vmdl.git"]
+# vmdl = { path = "../vmdl" }
 
 # [patch."https://github.com/eira-fransham/vbsp.git"]
 # vbsp = { path = "../vbsp" }

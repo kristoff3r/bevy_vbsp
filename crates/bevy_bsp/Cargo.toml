@@ -33,6 +33,9 @@ vtf.workspace = true
 vmt-parser.workspace = true
 qbsp.workspace = true
 
+# Debugging
+humansize = { version = "2.1", optional = true }
+
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 itertools.workspace = true

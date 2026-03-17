@@ -2,6 +2,7 @@ pub mod entities;
 
 use core::panic;
 use std::{
+    borrow::Cow,
     ffi::OsStr,
     ops::Deref,
     path::{Path, PathBuf},
@@ -10,20 +11,22 @@ use std::{
 };
 
 use anyhow::bail;
-use avian3d::prelude::RigidBody;
+use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
     asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader},
     core_pipeline::Skybox,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
     math::primitives,
-    platform::collections::HashMap,
+    platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
     render::render_resource::{
-        Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
+        AstcBlock, AstcChannel, Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor,
+        TextureViewDimension,
     },
 };
 use entities::spawn_bsp_model;
-use image::imageops::FilterType;
+use image::{Rgba, Rgba32FImage, imageops::FilterType};
+use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 
@@ -63,7 +66,134 @@ impl Plugin for BspLoaderPlugin {
     }
 }
 
+const ASTC_BLOCK_SIZES: &[(AstcBlock, astcenc_rs::Extents)] = &[
+    (AstcBlock::B4x4, astcenc_rs::Extents { x: 4, y: 4, z: 1 }),
+    (AstcBlock::B5x4, astcenc_rs::Extents { x: 5, y: 4, z: 1 }),
+    (AstcBlock::B5x5, astcenc_rs::Extents { x: 5, y: 5, z: 1 }),
+    (AstcBlock::B6x5, astcenc_rs::Extents { x: 6, y: 5, z: 1 }),
+    (AstcBlock::B6x6, astcenc_rs::Extents { x: 6, y: 6, z: 1 }),
+    (AstcBlock::B8x5, astcenc_rs::Extents { x: 8, y: 5, z: 1 }),
+    (AstcBlock::B8x6, astcenc_rs::Extents { x: 8, y: 6, z: 1 }),
+    (AstcBlock::B8x8, astcenc_rs::Extents { x: 8, y: 8, z: 1 }),
+    (AstcBlock::B10x5, astcenc_rs::Extents { x: 10, y: 5, z: 1 }),
+    (AstcBlock::B10x6, astcenc_rs::Extents { x: 10, y: 6, z: 1 }),
+    (AstcBlock::B10x8, astcenc_rs::Extents { x: 10, y: 8, z: 1 }),
+    (
+        AstcBlock::B10x10,
+        astcenc_rs::Extents { x: 10, y: 10, z: 1 },
+    ),
+    (
+        AstcBlock::B12x10,
+        astcenc_rs::Extents { x: 12, y: 10, z: 1 },
+    ),
+    (
+        AstcBlock::B12x12,
+        astcenc_rs::Extents { x: 12, y: 12, z: 1 },
+    ),
+];
+
+const fn extents(block_size: AstcBlock) -> Option<astcenc_rs::Extents> {
+    let mut i = 0;
+
+    while i < ASTC_BLOCK_SIZES.len() {
+        let (check_block_size, extents) = ASTC_BLOCK_SIZES[i];
+        if check_block_size as usize == block_size as usize {
+            return Some(extents);
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
+    let extents = extents(block_size).unwrap();
+
+    let config = astcenc_rs::ConfigBuilder::new()
+        .with_profile(astcenc_rs::Profile::HdrRgbLdrA)
+        .with_preset(astcenc_rs::PRESET_THOROUGH)
+        .with_block_size(extents)
+        .build()
+        .unwrap();
+    let mut context = astcenc_rs::Context::new(config).unwrap();
+
+    let width = image.width().next_multiple_of(extents.x);
+    let height = image.height().next_multiple_of(extents.y);
+
+    let pixels = if width == image.width() && height == image.height() {
+        Cow::Borrowed(&**image)
+    } else {
+        let pixels = image
+            .rows()
+            .flat_map(|row| {
+                row.copied().chain(std::iter::repeat_n(
+                    Rgba::<f32>([0., 0., 0., 1.]),
+                    (width - image.width()) as usize,
+                ))
+            })
+            .chain(
+                std::iter::repeat_n(
+                    std::iter::repeat_n(Rgba::<f32>([0., 0., 0., 1.]), width as usize),
+                    (height - image.height()) as usize,
+                )
+                .flatten(),
+            )
+            .flat_map(|pixel| pixel.0)
+            .collect::<Vec<_>>();
+
+        Cow::Owned(pixels)
+    };
+
+    let image_to_encode = astcenc_rs::Image {
+        extents: astcenc_rs::Extents {
+            x: width,
+            y: height,
+            z: 1,
+        },
+        data: &[&*pixels][..],
+    };
+
+    let astc_bytes = context
+        .compress(&image_to_encode, astcenc_rs::Swizzle::rgb1())
+        .unwrap();
+
+    #[cfg(feature = "humansize")]
+    {
+        println!(
+            "ASTC lightmap size: {}",
+            humansize::format_size(astc_bytes.len(), humansize::DECIMAL),
+        );
+    }
+
+    #[cfg(not(feature = "humansize"))]
+    {
+        println!("ASTC lightmap size: {}b", astc_bytes.len(),);
+    }
+
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        astc_bytes,
+        TextureFormat::Astc {
+            block: block_size,
+            channel: AstcChannel::Hdr,
+        },
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+#[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct LightmapSettings {
+    pub astc_block_size: Option<AstcBlock>,
+}
+
 pub fn spawn_map_entities(
+    In(lightmap_settings): In<LightmapSettings>,
     mut commands: Commands,
     map_assets: Res<MapAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -71,10 +201,51 @@ pub fn spawn_map_entities(
     mut images: ResMut<Assets<Image>>,
     camera: Option<Single<Entity, With<Camera>>>,
 ) {
+    let extrusion = if let Some(block_size) = lightmap_settings.astc_block_size
+        && let Some(extents) = extents(block_size)
+    {
+        extents.x.max(extents.y) / 2
+    } else {
+        4
+    };
+
     let bsp_asset = bsp_asset_data.get(&map_assets.bsp).cloned().unwrap();
-    let bsp = bsp_asset.bsp.clone();
+    let bsp = &bsp_asset.bsp;
+
+    let packer = DefaultLightmapPacker::<PerStyleLightmapData<Rgba32FImage>>::new(
+        qbsp::prelude::ComputeLightmapSettings {
+            extrusion,
+            ..Default::default()
+        },
+    );
+
+    let atlas = bsp
+        .compute_lightmap_atlas_rgb32f(packer)
+        .expect("Could not build atlas");
+
+    let styles_to_image = atlas
+        .data
+        .into_inner()
+        .into_iter()
+        .map(|(style, img)| {
+            let gpu_image = if let Some(block_size) = lightmap_settings.astc_block_size {
+                astc_convert(&img, block_size)
+            } else {
+                Image::from_dynamic(img.into(), true, RenderAssetUsages::RENDER_WORLD)
+            };
+
+            let size = gpu_image.size();
+
+            (style, (images.add(gpu_image), size))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
 
     info!("Loaded BSP models: {}", bsp.models().count());
+
+    let mut processed_models: HashMap<
+        String,
+        Vec<(Handle<Mesh>, Handle<StandardMaterial>, Option<Collider>)>,
+    > = HashMap::new();
 
     for raw_entity in &bsp.entities {
         let entity: GenericEntity = raw_entity.parse().unwrap();
@@ -89,8 +260,9 @@ pub fn spawn_map_entities(
                     &mut commands,
                     &bsp_asset,
                     &mut meshes,
-                    &mut images,
                     bsp.models().next().unwrap(),
+                    &styles_to_image,
+                    &atlas.rects,
                     Transform::IDENTITY,
                 );
             }
@@ -139,25 +311,48 @@ pub fn spawn_map_entities(
                                 &mut commands,
                                 &bsp_asset,
                                 &mut meshes,
-                                &mut images,
                                 model,
+                                &styles_to_image,
+                                &atlas.rects,
                                 transform,
                             );
                         } else {
-                            // if let Some(model) = bsp_asset.models.get(model.deref()) {
-                            //     spawn_mdl_model(
-                            //         &mut commands,
-                            //         &bsp_asset,
-                            //         &mut meshes,
-                            //         model,
-                            //         transform,
-                            //         RigidBody::Dynamic,
-                            //     );
-                            // }
+                            let bundles = match processed_models.entry(model.deref().to_owned()) {
+                                Entry::Occupied(occupied_entry) => {
+                                    occupied_entry.into_mut().iter().cloned()
+                                }
+                                Entry::Vacant(vacant_entry) => {
+                                    let Some(model) = bsp_asset.models.get(vacant_entry.key())
+                                    else {
+                                        continue;
+                                    };
+                                    let bundles = spawn_mdl_model(&bsp_asset, model)
+                                        .map(|(mdl, mat)| {
+                                            let collider = Collider::trimesh_from_mesh(&mdl);
+                                            let mdl = meshes.add(mdl);
+                                            (mdl, mat, collider)
+                                        })
+                                        .collect::<Vec<_>>();
+
+                                    vacant_entry.insert(bundles).iter().cloned()
+                                }
+                            };
+
+                            for (mesh, material, collider) in bundles {
+                                let mut new_entity = commands.spawn((
+                                    Mesh3d(mesh),
+                                    MeshMaterial3d(material),
+                                    transform,
+                                ));
+
+                                if let Some(collider) = collider {
+                                    new_entity.insert((collider, RigidBody::Static));
+                                }
+                            }
                         }
                     }
                 } else {
-                    // println!("unknown entity: {:?}", entity.class);
+                    debug!("unknown entity: {:?}", entity.class);
                 }
             }
         }
@@ -192,26 +387,35 @@ pub fn spawn_map_entities(
             .as_str()
             .to_ascii_lowercase();
 
-        let Some(model) = bsp_asset.models.get(name.as_str()) else {
-            warn!(
-                "static prop model={} not found in bsp pakfile",
-                name.as_str()
-            );
-
-            continue;
-        };
-
         let transform = Transform::from_translation(Vec3::from(source_to_bevy(static_prop.origin)))
             .with_rotation(angles_to_bevy(&static_prop.angles));
 
-        spawn_mdl_model(
-            &mut commands,
-            &bsp_asset,
-            &mut meshes,
-            model,
-            transform,
-            RigidBody::Static,
-        );
+        let bundles = match processed_models.entry(name.as_str().to_owned()) {
+            Entry::Occupied(occupied_entry) => occupied_entry.into_mut().iter().cloned(),
+            Entry::Vacant(vacant_entry) => {
+                let Some(model) = bsp_asset.models.get(vacant_entry.key()) else {
+                    continue;
+                };
+                let bundles = spawn_mdl_model(&bsp_asset, model)
+                    .map(|(mdl, mat)| {
+                        let collider = Collider::trimesh_from_mesh(&mdl);
+                        let mdl = meshes.add(mdl);
+                        (mdl, mat, collider)
+                    })
+                    .collect::<Vec<_>>();
+
+                vacant_entry.insert(bundles).iter().cloned()
+            }
+        };
+
+        for (mesh, material, collider) in bundles {
+            let mut new_entity =
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
+
+            if let Some(collider) = collider {
+                new_entity.insert((collider, RigidBody::Static));
+            }
+        }
     }
 
     const EXPECTED_SKYBOX_IMAGE_COUNT: u32 = 6;
@@ -279,22 +483,6 @@ pub fn spawn_map_entities(
 
         let image = images.add(result);
 
-        // let image = {
-        //     let image = images.get_mut(&bsp_asset.cubemap).unwrap();
-        //     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        //         // anisotropy_clamp: 1,
-        //         // address_mode_u: ImageAddressMode::Repeat,
-        //         // address_mode_v: ImageAddressMode::Repeat,
-        //         ..ImageSamplerDescriptor::linear()
-        //     });
-        //     image.reinterpret_stacked_2d_as_array(6);
-        //     image.texture_view_descriptor = Some(TextureViewDescriptor {
-        //         dimension: Some(TextureViewDimension::Cube),
-        //         ..default()
-        //     });
-
-        //     bsp_asset.cubemap.clone()
-        // };
         if let Some(camera) = camera {
             commands.entity(*camera).insert((
                 //

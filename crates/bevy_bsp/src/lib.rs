@@ -25,7 +25,7 @@ use bevy::{
     },
 };
 use entities::spawn_bsp_model;
-use image::{Rgba, Rgba32FImage, imageops::FilterType};
+use image::{Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
@@ -35,7 +35,14 @@ use tracing::instrument;
 
 use entities::spawn_mdl_model;
 
-use crate::entities::spawn_worldspawn;
+// Re-export everything while we use a lot of git dependencies
+pub use bevy_vpk;
+pub use qbsp;
+pub use vbsp;
+pub use vdf_reader;
+pub use vmdl;
+pub use vmt_parser;
+pub use vpk;
 
 pub struct BspLoaderPlugin;
 

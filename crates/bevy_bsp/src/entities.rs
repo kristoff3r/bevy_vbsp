@@ -5,7 +5,6 @@ use std::collections::{HashMap, hash_map::Entry};
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::RenderLayers,
     mesh::{Indices, PrimitiveTopology},
     pbr::Lightmap,
     prelude::*,

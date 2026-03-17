@@ -6487,6 +6487,7 @@ dependencies = [
 [[package]]
 name = "vbsp"
 version = "0.9.1"
+source = "git+https://github.com/eira-fransham/vbsp.git#64cd85d4176dc8bad4ef33a6189addbc04ed171c"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -6511,6 +6512,7 @@ dependencies = [
 [[package]]
 name = "vbsp-common"
 version = "0.1.0"
+source = "git+https://github.com/eira-fransham/vbsp.git#64cd85d4176dc8bad4ef33a6189addbc04ed171c"
 dependencies = [
  "binrw",
  "glam 0.30.10",

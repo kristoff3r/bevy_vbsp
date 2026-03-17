@@ -201,7 +201,7 @@ fn main() {
     })
     .init_resource::<PhysAssets>()
     .init_state::<MapState>()
-    .add_systems(Startup, (load_vpks, spawn_light))
+    .add_systems(Startup, load_vpks)
     .add_observer(load_map)
     .add_systems(
         Update,
@@ -304,19 +304,6 @@ pub enum MapState {
     #[default]
     Loading,
     Done,
-}
-
-fn spawn_light(mut commands: Commands) {
-    return;
-    commands.spawn((
-        DirectionalLight {
-            illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
-            shadows_enabled: true,
-            affects_lightmapped_mesh_diffuse: false,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
 }
 
 // Inlined version of bevy_flycam

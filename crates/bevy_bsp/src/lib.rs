@@ -150,7 +150,7 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
                 std::iter::repeat_n(
                     image
                         .rows()
-                        .last()
+                        .next_back()
                         .unwrap()
                         .copied()
                         .chain(std::iter::repeat_n(last, (width - image.width()) as usize)),
@@ -321,7 +321,7 @@ pub fn spawn_map_entities(
                         })
                         .unwrap_or_default();
 
-                    let transform = Transform::from_translation(Vec3::from(source_to_bevy(origin)))
+                    let transform = Transform::from_translation(source_to_bevy(origin))
                         .with_rotation(angles_to_bevy(&angles));
 
                     if let Some(model) = model.as_value() {
@@ -411,7 +411,7 @@ pub fn spawn_map_entities(
             .as_str()
             .to_ascii_lowercase();
 
-        let transform = Transform::from_translation(Vec3::from(source_to_bevy(static_prop.origin)))
+        let transform = Transform::from_translation(source_to_bevy(static_prop.origin))
             .with_rotation(angles_to_bevy(&static_prop.angles));
 
         let vhv;
@@ -836,7 +836,7 @@ impl AssetLoader for BspAssetLoader {
                     })
                     .unwrap_or_default();
 
-                let transform = Transform::from_translation(Vec3::from(source_to_bevy(origin)))
+                let transform = Transform::from_translation(source_to_bevy(origin))
                     .with_rotation(angles_to_bevy(&angles));
                 match entity.class.as_str() {
                     "info_player_terrorist" => {

@@ -36,7 +36,7 @@ fn mesh_from_face(
             (
                 face.texture().uv(position),
                 lightmap_uv_rect.min + lightmap_uv_rect.size() * lightmap_uv,
-                Vec3::from(source_to_bevy(model_origin + position)),
+                source_to_bevy(model_origin + position),
             )
         })
         .multiunzip();

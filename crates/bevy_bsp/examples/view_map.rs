@@ -514,8 +514,8 @@ fn initial_grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<Primar
 struct PlayerInput;
 
 /// Spawns the `Camera3dBundle` to be controlled
-fn setup_player(
-    mut commands: Commands,
+fn setup_walk_player(
+    mut setup_walk_player: Commands,
     map_res: Res<MapAssets>,
     map_assets: Res<Assets<BspAsset>>,
 ) {
@@ -535,7 +535,7 @@ fn setup_player(
     };
 
     // Spawn the player entity
-    let player = commands
+    let player = setup_walk_player
         .spawn((
             // The character controller configuration
             CharacterController::default(),
@@ -571,7 +571,7 @@ fn setup_player(
         .id();
 
     // Spawn the camera
-    commands.spawn((
+    setup_walk_player.spawn((
         Camera3d::default(),
         Hdr,
         Bloom::default(),
@@ -697,7 +697,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, initial_grab_cursor)
             .add_systems(
                 First,
-                setup_player.run_if(not(any_with_component::<PlayerInput>)),
+                setup_walk_player.run_if(not(any_with_component::<PlayerInput>)),
             )
             .add_systems(Update, player_move)
             .add_systems(Update, player_look)

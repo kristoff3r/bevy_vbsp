@@ -541,7 +541,7 @@ fn setup_player(
             CharacterController::default(),
             transform,
             RigidBody::Kinematic,
-            Collider::capsule(0.7, HEIGHT),
+            Collider::cylinder(0.7, HEIGHT),
             Mass(90.0),
             // Configure inputs
             PlayerInput,
@@ -575,7 +575,7 @@ fn setup_player(
         Camera3d::default(),
         Hdr,
         Bloom::default(),
-        Exposure::INDOOR,
+        Exposure { ev100: 6. },
         Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         // Enable the optional builtin camera controller
         CharacterControllerCameraOf::new(player),

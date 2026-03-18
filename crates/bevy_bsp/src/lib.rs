@@ -416,7 +416,11 @@ pub fn spawn_map_entities(
 
         let vhv;
         let mut vertex_lighting = None;
-        let static_prop_id_key = if let Some(bytes) = bsp.pack.get(&format!("sp_{i}.vhv")).unwrap()
+        let static_prop_id_key = if let Some(bytes) = bsp
+            .pack
+            .get(&format!("sp_hdr_{i}.vhv"))
+            .unwrap()
+            .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
         {
             vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
 
@@ -436,6 +440,10 @@ pub fn spawn_map_entities(
         let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
             Entry::Occupied(occupied_entry) => occupied_entry.into_mut().iter().cloned(),
             Entry::Vacant(vacant_entry) => {
+                // TODO: Not sure why the vertex color seems to be at a different scale to the
+                // lightmaps, but we just scale it for now.
+                const VERTEX_COLOR_SCALE: f32 = 64.;
+
                 let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
                     continue;
                 };
@@ -445,7 +453,8 @@ pub fn spawn_map_entities(
                             let colors = vertex_lighting
                                 .iter()
                                 .map(|color| {
-                                    let [r, g, b] = color.to_rgb32f().map(|v| v / 64.);
+                                    let [r, g, b] =
+                                        color.to_rgb32f().map(|v| v / VERTEX_COLOR_SCALE);
                                     [r, g, b, 1.]
                                 })
                                 .chain(std::iter::repeat([1., 1., 1., 1.]))
@@ -637,11 +646,12 @@ impl AssetLoader for BspAssetLoader {
                     None
                 };
 
-                let base_color = match &vmt {
-                    vmt_parser::material::Material::UnlitGeneric(mat) => {
-                        Color::srgba(mat.color.0[0], mat.color.0[1], mat.color.0[2], mat.alpha)
-                    }
-                    _ => Color::WHITE,
+                let (base_color, unlit) = match &vmt {
+                    vmt_parser::material::Material::UnlitGeneric(mat) => (
+                        Color::srgba(mat.color.0[0], mat.color.0[1], mat.color.0[2], mat.alpha),
+                        true,
+                    ),
+                    _ => (Color::WHITE, false),
                 };
 
                 StandardMaterial {
@@ -651,6 +661,7 @@ impl AssetLoader for BspAssetLoader {
                     perceptual_roughness: 0.8,
                     reflectance: 0.2,
                     metallic: 0.0,
+                    unlit,
                     alpha_mode: if vmt.translucent() {
                         AlphaMode::Blend
                     } else if let Some(test) = vmt.alpha_test() {

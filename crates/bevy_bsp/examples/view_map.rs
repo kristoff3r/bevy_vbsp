@@ -1,16 +1,24 @@
 use std::fmt;
 
 use avian3d::PhysicsPlugins;
-use avian3d::prelude::{Collider, RigidBody, SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::{Collider, Mass, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
 use bevy::camera::visibility::RenderLayers;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
 use bevy::render::view::Hdr;
+use bevy_ahoy::camera::CharacterControllerCameraOf;
+use bevy_ahoy::input::{Crouch, Jump, Movement, RotateCamera};
+use bevy_ahoy::{AhoyPlugins, CharacterController};
 use bevy_bsp::{
     BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, bevy_to_source, spawn_map_entities,
 };
+use bevy_enhanced_input::action::Action;
+use bevy_enhanced_input::prelude::{
+    Axial, Binding, Bindings, Cardinal, DeadZone, InputContextAppExt, Scale,
+};
+use bevy_enhanced_input::{EnhancedInputPlugin, actions, bindings};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
 use clap::builder::PossibleValue;
@@ -193,7 +201,10 @@ fn main() {
         BspLoaderPlugin,
         PlayerPlugin,
         PhysicsPlugins::default(),
+        EnhancedInputPlugin,
+        AhoyPlugins::default(),
     ))
+    .add_input_context::<PlayerInput>()
     .insert_resource(GlobalAmbientLight {
         color: ClearColor::default().0,
         brightness: 10000.0,
@@ -499,17 +510,86 @@ fn initial_grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<Primar
     }
 }
 
+#[derive(Component)]
+struct PlayerInput;
+
 /// Spawns the `Camera3dBundle` to be controlled
-fn setup_player(mut commands: Commands) {
+fn setup_player(
+    mut commands: Commands,
+    map_res: Res<MapAssets>,
+    map_assets: Res<Assets<BspAsset>>,
+) {
+    const HEIGHT: f32 = 1.8;
+
+    let Some(bsp) = map_assets.get(&map_res.bsp) else {
+        return;
+    };
+
+    let Some(spawn_point) = bsp.t_spawn_points.first() else {
+        return;
+    };
+
+    let transform = Transform {
+        translation: spawn_point.translation + Vec3::new(0., HEIGHT, 0.),
+        ..*spawn_point
+    };
+
+    // Spawn the player entity
+    let player = commands
+        .spawn((
+            // The character controller configuration
+            CharacterController::default(),
+            transform,
+            RigidBody::Kinematic,
+            Collider::capsule(0.7, HEIGHT),
+            Mass(90.0),
+            // Configure inputs
+            PlayerInput,
+            actions!(PlayerInput[
+                (
+                    Action::<Movement>::new(),
+                    DeadZone::default(),
+                    Bindings::spawn((
+                        Cardinal::wasd_keys(),
+                        Axial::left_stick()
+                    ))
+                ),
+                (
+                    Action::<Jump>::new(),
+                    bindings![KeyCode::Space,  GamepadButton::South],
+                ),
+                (
+                    Action::<RotateCamera>::new(),
+                    Scale::splat(0.1),
+                    Bindings::spawn((
+                        Spawn(Binding::mouse_motion()),
+                        Axial::right_stick()
+                    ))
+                ),
+            ]),
+        ))
+        .id();
+
+    // Spawn the camera
     commands.spawn((
         Camera3d::default(),
-        RenderLayers::layer(0),
         Hdr,
         Bloom::default(),
         Exposure::INDOOR,
         Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-        FlyCam,
+        // Enable the optional builtin camera controller
+        CharacterControllerCameraOf::new(player),
     ));
+
+    //     commands.spawn((
+    //         Camera3d::default(),
+    //         RenderLayers::layer(0),
+    //         Hdr,
+    //         Bloom::default(),
+    //         Exposure::INDOOR,
+    //         Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+    //         FlyCam,
+    //     ));
 }
 
 /// Handles keyboard input and movement
@@ -607,22 +687,6 @@ fn cursor_grab(
     }
 }
 
-// Grab cursor when an entity with FlyCam is added
-fn initial_grab_on_flycam_spawn(
-    mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    query_added: Query<Entity, Added<FlyCam>>,
-) {
-    if query_added.is_empty() {
-        return;
-    }
-
-    if let Ok(cursor_options) = &mut cursor_options.single_mut() {
-        toggle_grab_cursor(cursor_options);
-    } else {
-        warn!("Primary window not found for `initial_grab_cursor`!");
-    }
-}
-
 /// Contains everything needed to add first-person fly camera behavior to your game
 pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
@@ -630,23 +694,11 @@ impl Plugin for PlayerPlugin {
         app.init_resource::<InputState>()
             .init_resource::<MovementSettings>()
             .init_resource::<KeyBindings>()
-            .add_systems(Startup, setup_player)
             .add_systems(Startup, initial_grab_cursor)
-            .add_systems(Update, player_move)
-            .add_systems(Update, player_look)
-            .add_systems(Update, cursor_grab);
-    }
-}
-
-/// Same as [`PlayerPlugin`] but does not spawn a camera
-pub struct NoCameraPlayerPlugin;
-impl Plugin for NoCameraPlayerPlugin {
-    fn build(&self, app: &mut App) {
-        app.init_resource::<InputState>()
-            .init_resource::<MovementSettings>()
-            .init_resource::<KeyBindings>()
-            .add_systems(Startup, initial_grab_cursor)
-            .add_systems(Startup, initial_grab_on_flycam_spawn)
+            .add_systems(
+                First,
+                setup_player.run_if(not(any_with_component::<PlayerInput>)),
+            )
             .add_systems(Update, player_move)
             .add_systems(Update, player_look)
             .add_systems(Update, cursor_grab);

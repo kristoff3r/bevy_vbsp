@@ -11,6 +11,8 @@ bevy_vpk = { path = "crates/bevy_vpk" }
 
 bevy = "0.18"
 avian3d = "0.6.0"
+bevy_ahoy = { git = "https://github.com/janhohenheim/bevy_ahoy.git" }
+bevy_enhanced_input = "0.24"
 glam = "0.30"
 
 # NOTE: Using fork that removes unnecessary noisy log lines

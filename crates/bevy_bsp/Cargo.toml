@@ -39,3 +39,5 @@ humansize = { version = "2.1", optional = true }
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 itertools.workspace = true
+bevy_enhanced_input.workspace = true
+bevy_ahoy.workspace = true

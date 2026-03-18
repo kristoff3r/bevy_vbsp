@@ -272,7 +272,6 @@ pub fn spawn_mdl_model(
         .map(|(mdl_mesh, texture_info)| {
             let (vertices, normals, uvs): (Vec<_>, Vec<_>, Vec<_>) = mdl_mesh
                 .vertices()
-                .iter()
                 .map(|v| {
                     (
                         source_to_bevy(Vec3::new(v.position.x, v.position.y, v.position.z)),

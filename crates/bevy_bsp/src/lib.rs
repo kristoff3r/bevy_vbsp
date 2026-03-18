@@ -262,7 +262,8 @@ pub fn spawn_map_entities(
     info!("Loaded BSP models: {}", bsp.models().count());
 
     let mut processed_models: HashMap<
-        String,
+        // Optional static prop ID (for when a mesh has baked vertex lighting) + prop name
+        (Option<usize>, String),
         Vec<(Handle<Mesh>, Handle<StandardMaterial>, Option<Collider>)>,
     > = HashMap::new();
 
@@ -338,12 +339,14 @@ pub fn spawn_map_entities(
                                 transform,
                             );
                         } else {
-                            let bundles = match processed_models.entry(model.deref().to_owned()) {
+                            let bundles = match processed_models
+                                .entry((None, model.deref().to_owned()))
+                            {
                                 Entry::Occupied(occupied_entry) => {
                                     occupied_entry.into_mut().iter().cloned()
                                 }
                                 Entry::Vacant(vacant_entry) => {
-                                    let Some(model) = bsp_asset.models.get(vacant_entry.key())
+                                    let Some(model) = bsp_asset.models.get(&vacant_entry.key().1)
                                     else {
                                         continue;
                                     };
@@ -399,7 +402,7 @@ pub fn spawn_map_entities(
         ));
     }
 
-    for static_prop in bsp.static_props() {
+    for (i, static_prop) in bsp.static_props().enumerate() {
         if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
             continue;
         }
@@ -411,14 +414,47 @@ pub fn spawn_map_entities(
         let transform = Transform::from_translation(Vec3::from(source_to_bevy(static_prop.origin)))
             .with_rotation(angles_to_bevy(&static_prop.angles));
 
-        let bundles = match processed_models.entry(name.as_str().to_owned()) {
+        let vhv;
+        let mut vertex_lighting = None;
+        let static_prop_id_key = if let Some(bytes) = bsp.pack.get(&format!("sp_{i}.vhv")).unwrap()
+        {
+            vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
+
+            vertex_lighting = Some(
+                &vhv.meshes
+                    .iter()
+                    .min_by_key(|mesh| mesh.header.lod)
+                    .unwrap()
+                    .vertices,
+            );
+
+            Some(i)
+        } else {
+            None
+        };
+
+        let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
             Entry::Occupied(occupied_entry) => occupied_entry.into_mut().iter().cloned(),
             Entry::Vacant(vacant_entry) => {
-                let Some(model) = bsp_asset.models.get(vacant_entry.key()) else {
+                let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
                     continue;
                 };
                 let bundles = spawn_mdl_model(&bsp_asset, model)
-                    .map(|(mdl, mat)| {
+                    .map(|(mut mdl, mat)| {
+                        if let Some(vertex_lighting) = vertex_lighting {
+                            let colors = vertex_lighting
+                                .iter()
+                                .map(|color| {
+                                    let [r, g, b] = color.to_rgb32f().map(|v| v / 64.);
+                                    [r, g, b, 1.]
+                                })
+                                .chain(std::iter::repeat([1., 1., 1., 1.]))
+                                .take(mdl.count_vertices())
+                                .collect::<Vec<_>>();
+
+                            mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+
                         let collider = Collider::trimesh_from_mesh(&mdl);
                         let mdl = meshes.add(mdl);
                         (mdl, mat, collider)

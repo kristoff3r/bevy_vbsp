@@ -23,6 +23,7 @@ itertools.workspace = true
 glam.workspace = true
 pin-project.workspace = true
 serde.workspace = true
+rayon.workspace = true
 tracing.workspace = true
 
 vmdl.workspace = true
@@ -41,3 +42,4 @@ clap = { workspace = true, features = ["derive"] }
 itertools.workspace = true
 bevy_enhanced_input.workspace = true
 bevy_ahoy.workspace = true
+bevy-inspector-egui = "0.36"

@@ -19,7 +19,7 @@ glam = "0.30"
 vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
 vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
 vtf = "0.3"
-vbsp = { git = "https://github.com/eira-fransham/vbsp.git" }
+vbsp = { git = "https://github.com/eira-fransham/vbsp.git", branch = "visdata" }
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
 qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
 vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
@@ -35,6 +35,7 @@ itertools = "0.14"
 tracing = "0.1"
 pin-project = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+rayon = "1.11"
 
 # [patch."https://github.com/eira-fransham/qbsp.git"]
 # qbsp = { path = "../qbsp" }

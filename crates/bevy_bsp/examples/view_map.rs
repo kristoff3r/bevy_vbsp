@@ -4,13 +4,17 @@ use avian3d::PhysicsPlugins;
 use avian3d::prelude::{Collider, Mass, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
 use bevy::camera::visibility::RenderLayers;
+use bevy::color::palettes::css::WHITE;
+use bevy::math::bounding::{Aabb3d, BoundingVolume as _};
+use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
 use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
-use bevy_ahoy::input::{Crouch, Jump, Movement, RotateCamera};
+use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
+use bevy_bsp::visdata::{CameraRenderMask, VisdataPlugin};
 use bevy_bsp::{
     BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, bevy_to_source, spawn_map_entities,
 };
@@ -19,6 +23,8 @@ use bevy_enhanced_input::prelude::{
     Axial, Binding, Bindings, Cardinal, DeadZone, InputContextAppExt, Scale,
 };
 use bevy_enhanced_input::{EnhancedInputPlugin, actions, bindings};
+use bevy_inspector_egui::bevy_egui::EguiPlugin;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
 use clap::builder::PossibleValue;
@@ -203,14 +209,16 @@ fn main() {
         PhysicsPlugins::default(),
         EnhancedInputPlugin,
         AhoyPlugins::default(),
+        VisdataPlugin,
+        WireframePlugin::default(),
     ))
-    .add_input_context::<PlayerInput>()
     .insert_resource(GlobalAmbientLight {
         color: ClearColor::default().0,
         brightness: 10000.0,
         affects_lightmapped_meshes: false,
     })
     .init_resource::<PhysAssets>()
+    .insert_resource(UpdateVisdata(false))
     .init_state::<MapState>()
     .add_systems(Startup, load_vpks)
     .add_observer(load_map)
@@ -219,7 +227,6 @@ fn main() {
         (
             check_map_loaded.run_if(in_state(MapState::Loading)),
             spawn_cube,
-            set_player_visleaf,
         ),
     );
 
@@ -391,6 +398,7 @@ pub struct KeyBindings {
     pub move_ascend: KeyCode,
     pub move_descend: KeyCode,
     pub toggle_grab_cursor: KeyCode,
+    pub toggle_update_visdata: KeyCode,
     pub spawn_cube: KeyCode,
 }
 
@@ -404,8 +412,19 @@ impl Default for KeyBindings {
             move_ascend: KeyCode::Space,
             move_descend: KeyCode::ControlLeft,
             toggle_grab_cursor: KeyCode::Escape,
+            toggle_update_visdata: KeyCode::KeyT,
             spawn_cube: KeyCode::KeyP,
         }
+    }
+}
+
+fn toggle_update_visdata(
+    mut update_visdata: ResMut<UpdateVisdata>,
+    keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+) {
+    if keys.just_pressed(key_bindings.toggle_update_visdata) {
+        update_visdata.0 = !update_visdata.0;
     }
 }
 
@@ -456,25 +475,38 @@ fn spawn_cube(
     ));
 }
 
-fn set_player_visleaf(
+#[derive(Resource)]
+struct UpdateVisdata(bool);
+
+fn set_player_viscluster(
+    update_visdata: Res<UpdateVisdata>,
     camera: Option<Single<(&GlobalTransform, &mut RenderLayers), With<Camera>>>,
     map_assets: Res<MapAssets>,
     bsp_asset_data: Res<Assets<BspAsset>>,
 ) {
+    if !update_visdata.0 {
+        return;
+    }
+
     let Some(mut camera) = camera else {
+        dbg!();
         return;
     };
 
     let Some(bsp) = bsp_asset_data.get(&map_assets.bsp) else {
+        dbg!();
         return;
     };
 
+    let source_position = bevy_to_source(camera.0.translation());
+
     let layer = bsp
         .bsp
-        .leaf_at(bevy_to_source(camera.0.translation()))
+        .leaf_at(source_position)
         // TODO: The `+ 1` should be handled better, but we can't use `usize::MAX` since `RenderLayers` is
         // essentially a bitvec and that will make every render layer type huge.
-        .map(|leaf| leaf.cluster as usize + 1)
+        .and_then(|leaf| usize::try_from(leaf.cluster).ok())
+        .map(|cluster| cluster + 1)
         .unwrap_or_default();
 
     if !camera.1.iter().contains(&layer) {
@@ -515,7 +547,7 @@ struct PlayerInput;
 
 /// Spawns the `Camera3dBundle` to be controlled
 fn setup_walk_player(
-    mut setup_walk_player: Commands,
+    mut commands: Commands,
     map_res: Res<MapAssets>,
     map_assets: Res<Assets<BspAsset>>,
 ) {
@@ -534,62 +566,65 @@ fn setup_walk_player(
         ..*spawn_point
     };
 
-    // Spawn the player entity
-    let player = setup_walk_player
-        .spawn((
-            // The character controller configuration
-            CharacterController::default(),
-            transform,
-            RigidBody::Kinematic,
-            Collider::cylinder(0.7, HEIGHT),
-            Mass(90.0),
-            // Configure inputs
-            PlayerInput,
-            actions!(PlayerInput[
-                (
-                    Action::<Movement>::new(),
-                    DeadZone::default(),
-                    Bindings::spawn((
-                        Cardinal::wasd_keys(),
-                        Axial::left_stick()
-                    ))
-                ),
-                (
-                    Action::<Jump>::new(),
-                    bindings![KeyCode::Space,  GamepadButton::South],
-                ),
-                (
-                    Action::<RotateCamera>::new(),
-                    Scale::splat(0.1),
-                    Bindings::spawn((
-                        Spawn(Binding::mouse_motion()),
-                        Axial::right_stick()
-                    ))
-                ),
-            ]),
-        ))
-        .id();
+    // // Spawn the player entity
+    // let player = commands
+    //     .spawn((
+    //         // The character controller configuration
+    //         CharacterController::default(),
+    //         transform,
+    //         RigidBody::Kinematic,
+    //         Collider::cylinder(0.7, HEIGHT),
+    //         Mass(90.0),
+    //         // Configure inputs
+    //         PlayerInput,
+    //         actions!(PlayerInput[
+    //             (
+    //                 Action::<Movement>::new(),
+    //                 DeadZone::default(),
+    //                 Bindings::spawn((
+    //                     Cardinal::wasd_keys(),
+    //                     Axial::left_stick()
+    //                 ))
+    //             ),
+    //             (
+    //                 Action::<Jump>::new(),
+    //                 bindings![KeyCode::Space,  GamepadButton::South],
+    //             ),
+    //             (
+    //                 Action::<RotateCamera>::new(),
+    //                 Scale::splat(0.1),
+    //                 Bindings::spawn((
+    //                     Spawn(Binding::mouse_motion()),
+    //                     Axial::right_stick()
+    //                 ))
+    //             ),
+    //         ]),
+    //     ))
+    //     .id();
 
-    // Spawn the camera
-    setup_walk_player.spawn((
+    // // Spawn the camera
+    // commands.spawn((
+    //     Camera3d::default(),
+    //     RenderLayers::layer(0),
+    //     CameraRenderMask(1),
+    //     Hdr,
+    //     Bloom::default(),
+    //     Exposure { ev100: 6. },
+    //     Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+    //     // Enable the optional builtin camera controller
+    //     CharacterControllerCameraOf::new(player),
+    // ));
+
+    commands.spawn((
         Camera3d::default(),
+        RenderLayers::layer(0),
+        CameraRenderMask(1),
         Hdr,
         Bloom::default(),
-        Exposure { ev100: 6. },
-        Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-        // Enable the optional builtin camera controller
-        CharacterControllerCameraOf::new(player),
+        Exposure::INDOOR,
+        transform.looking_at(Vec3::ZERO, Vec3::Y),
+        FlyCam,
     ));
-
-    //     commands.spawn((
-    //         Camera3d::default(),
-    //         RenderLayers::layer(0),
-    //         Hdr,
-    //         Bloom::default(),
-    //         Exposure::INDOOR,
-    //         Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    //         FlyCam,
-    //     ));
 }
 
 /// Handles keyboard input and movement
@@ -697,10 +732,11 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, initial_grab_cursor)
             .add_systems(
                 First,
-                setup_walk_player.run_if(not(any_with_component::<PlayerInput>)),
+                setup_walk_player.run_if(not(any_with_component::<Camera>)),
             )
-            .add_systems(Update, player_move)
-            .add_systems(Update, player_look)
-            .add_systems(Update, cursor_grab);
+            .add_systems(
+                Update,
+                (player_move, player_look, toggle_update_visdata, cursor_grab),
+            );
     }
 }

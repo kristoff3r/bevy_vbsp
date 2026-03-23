@@ -1,4 +1,5 @@
 pub mod entities;
+pub mod visdata;
 
 use core::panic;
 use std::{
@@ -44,9 +45,11 @@ pub use vmdl;
 pub use vmt_parser;
 pub use vpk;
 
+use crate::entities::spawn_worldspawn;
+
 pub struct BspLoaderPlugin;
 
-pub const SCALE: f32 = 0.03125;
+pub const SCALE: f32 = 39.37008f32.recip();
 
 #[derive(Resource)]
 pub struct MapAssets {
@@ -54,11 +57,11 @@ pub struct MapAssets {
 }
 
 pub fn source_to_bevy(v: Vec3) -> Vec3 {
-    Vec3::new(v.y, v.z, v.x) * SCALE
+    Vec3::new(-v.y, v.z, -v.x) * SCALE
 }
 
 pub fn bevy_to_source(v: Vec3) -> Vec3 {
-    Vec3::new(v.z, v.x, v.y) / SCALE
+    Vec3::new(-v.z, -v.x, v.y) / SCALE
 }
 
 fn angles_to_bevy(angles: &Angles) -> Quat {
@@ -278,14 +281,13 @@ pub fn spawn_map_entities(
             "worldspawn" => {
                 // TODO: `spawn_worldspawn` (which uses the BSP tree to build meshes) seems to be broken,
                 // not all faces appear to be part of the tree.
-                spawn_bsp_model(
+                spawn_worldspawn(
                     &mut commands,
                     &bsp_asset,
                     &mut meshes,
-                    bsp.models().next().unwrap(),
+                    bsp_asset.bsp.models().next().expect("No worldspawn"),
                     &styles_to_image,
                     &atlas.rects,
-                    Transform::IDENTITY,
                 );
             }
             _ => {
@@ -328,7 +330,6 @@ pub fn spawn_map_entities(
                         if model.starts_with("*") {
                             let idx: usize = model.deref().split_at(1).1.parse().unwrap();
                             let model = bsp.models().nth(idx).unwrap();
-                            // info!("Spawning model for entity {idx} faces={}", model.face_count);
                             spawn_bsp_model(
                                 &mut commands,
                                 &bsp_asset,
@@ -416,11 +417,16 @@ pub fn spawn_map_entities(
 
         let vhv;
         let mut vertex_lighting = None;
-        let static_prop_id_key = if let Some(bytes) = bsp
-            .pack
-            .get(&format!("sp_hdr_{i}.vhv"))
-            .unwrap()
-            .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
+
+        let vertex_light_disabled = static_prop
+            .flags
+            .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
+        let static_prop_id_key = if !vertex_light_disabled
+            && let Some(bytes) = bsp
+                .pack
+                .get(&format!("sp_hdr_{i}.vhv"))
+                .unwrap()
+                .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
         {
             vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
 
@@ -853,6 +859,7 @@ impl AssetLoader for BspAssetLoader {
             }
         }
 
+        // TODO: Handle the leaf cluster.
         for model in &bsp.static_props.dict.name {
             let model_key = model.as_str().to_ascii_lowercase();
             if models.contains_key(&model_key) {
@@ -938,8 +945,12 @@ impl AssetLoader for BspAssetLoader {
 fn material_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
     let name = name.as_ref();
     match Path::new(name).extension() {
-        None => Some(format!("materials/{}.vmt", name)),
-        Some(ext) if ext == OsStr::new("vmt") => Some(name.to_owned()),
+        // We need to normalize double-slashes.
+        // TODO: We should just use paths, but we need to handle Windows vs Unix path separators.
+        None => Some(format!("materials/{}.vmt", name).replace("//", "/")),
+        Some(ext) if ext == OsStr::new("vmt") => {
+            Some(format!("materials/{}", name).replace("//", "/"))
+        }
         _ => None,
     }
 }
@@ -947,8 +958,10 @@ fn material_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
 fn texture_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
     let name = name.as_ref();
     match Path::new(name).extension() {
-        None => Some(format!("materials/{}.vtf", name)),
-        Some(ext) if ext == OsStr::new("vtf") => Some(name.to_owned()),
+        // We need to normalize double-slashes.
+        // TODO: We should just use paths, but we need to handle Windows vs Unix path separators.
+        None => Some(format!("materials/{}.vtf", name).replace("//", "/")),
+        Some(ext) if ext == OsStr::new("vtf") => Some(format!("materials/{}", name)),
         _ => None,
     }
 }

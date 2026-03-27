@@ -1,27 +1,27 @@
-use std::collections::HashSet;
-
 use bevy::{
-    app::{Plugin, PostUpdate},
+    app::{Plugin, PostUpdate, Startup},
     camera::{
         Camera3d,
         primitives::{Aabb, HalfSpace},
         visibility::{Layer, RenderLayers},
     },
+    color::{Alpha, Hsva},
     ecs::{
         component::Component,
         entity::{Entity, EntityHashMap, EntityHashSet},
         hierarchy::Children,
-        query::{Changed, Has, With, Without},
+        query::{Changed, With, Without},
         schedule::IntoScheduleConfigs as _,
-        system::{Commands, In, Local, ParallelCommands, Query},
+        system::{Commands, In, Local, Query, Single},
     },
     gizmos::gizmos::Gizmos,
-    pbr::wireframe::Wireframe,
-    transform::components::{GlobalTransform, Transform},
+    math::Isometry3d,
+    transform::components::GlobalTransform,
+    ui::{Node, px, widget::Text},
 };
-use glam::{Vec3, Vec3A};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use tracing::{debug, error, info, warn};
+use glam::{Quat, Vec2, Vec3, Vec3A, Vec3Swizzles as _};
+use rand::{RngExt as _, SeedableRng, rngs::SmallRng};
+use tracing::debug;
 
 #[derive(Component)]
 pub struct VisClusters {
@@ -41,6 +41,9 @@ pub struct VisChildren {
     pub back: Entity,
     pub midpoint: HalfSpace,
 }
+
+#[derive(Component, Debug)]
+pub struct DebugViscluster(pub Option<u32>);
 
 #[derive(Component)]
 #[relationship_target(relationship = VisTreeElementOf, linked_spawn)]
@@ -63,7 +66,20 @@ impl Plugin for VisdataPlugin {
         app.add_systems(
             PostUpdate,
             (ensure_camera_has_render_mask, set_visible_from_cameras).chain(),
-        );
+        )
+        .add_systems(PostUpdate, debug_vis_planes)
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn((
+                Node {
+                    position_type: bevy::ui::PositionType::Absolute,
+                    left: px(30),
+                    top: px(30),
+                    ..Default::default()
+                },
+                Text(Default::default()),
+                DebugTextOverlay,
+            ));
+        });
     }
 }
 
@@ -84,24 +100,144 @@ fn ensure_camera_has_render_mask(
     }
 }
 
+fn in_front(halfspace: HalfSpace, vec: Vec3A) -> bool {
+    Aabb {
+        center: vec,
+        half_extents: Vec3A::ZERO,
+    }
+    .is_in_half_space_identity(&halfspace)
+}
+
+#[derive(Component, Debug, Copy, Clone)]
+struct DebugTextOverlay;
+
+fn debug_vis_planes(
+    camera: Option<Single<&GlobalTransform, (With<Camera3d>, Without<LockViscluster>)>>,
+    roots: Query<Entity, With<VisTreeElements>>,
+    tree: Query<(&GlobalTransform, &VisChildren)>,
+    debug_visclusters: Query<&DebugViscluster>,
+    mut debug_overlay: Single<&mut Text, With<DebugTextOverlay>>,
+) {
+    struct TreeEnt {
+        entity: Entity,
+        active: bool,
+    }
+
+    let Some(camera) = camera else {
+        return;
+    };
+
+    // let mut rng = SmallRng::seed_from_u64(0);
+
+    for root in roots {
+        let mut nodes = vec![TreeEnt {
+            entity: root,
+            active: true,
+        }];
+
+        while let Some(cur_node) = nodes.pop() {
+            let Ok((
+                node_transform,
+                VisChildren {
+                    front,
+                    back,
+                    midpoint,
+                },
+            )) = tree.get(cur_node.entity)
+            else {
+                // Reached leaf.
+                if cur_node.active {
+                    let debug_viscluster = if let Ok(DebugViscluster(Some(cluster))) =
+                        debug_visclusters.get(cur_node.entity)
+                    {
+                        format!("Viscluster: {cluster}")
+                    } else {
+                        format!("Viscluster: none")
+                    };
+                    debug_overlay.0 = debug_viscluster;
+                }
+
+                continue;
+            };
+
+            // let rotation =
+            //     Quat::look_to_rh(midpoint.normal().into(), midpoint.normal().zxy().into());
+            // let translation =
+            //     node_transform.transform_point((midpoint.normal() * midpoint.d()).into());
+            // let color = Hsva::hsv(rng.random_range(0f32..360f32), 0.8, 1.)
+            //     .with_alpha(if cur_node.active { 0.4 } else { 0.0 });
+
+            // gizmos.grid(
+            //     Isometry3d {
+            //         rotation,
+            //         translation,
+            //     },
+            //     [20, 20].into(),
+            //     Vec2::splat(1.),
+            //     color,
+            // );
+
+            let inverse_transform = node_transform.to_matrix().inverse();
+
+            let in_front = in_front(
+                *midpoint,
+                inverse_transform
+                    .mul_mat4(&camera.to_matrix())
+                    .transform_point3a(Vec3A::ZERO),
+            );
+
+            // let arrow_point = node_transform.transform_point(
+            //     if in_front {
+            //         midpoint.normal() * crate::SCALE.recip()
+            //     } else {
+            //         -midpoint.normal() * crate::SCALE.recip()
+            //     }
+            //     .into(),
+            // );
+
+            // gizmos.arrow(
+            //     translation.into(),
+            //     (translation + arrow_point).into(),
+            //     color,
+            // );
+
+            let (active, inactive) = if in_front {
+                (front, back)
+            } else {
+                (back, front)
+            };
+
+            nodes.extend([
+                TreeEnt {
+                    entity: *active,
+                    active: true,
+                },
+                TreeEnt {
+                    entity: *inactive,
+                    active: false,
+                },
+            ])
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct LockViscluster;
+
 fn set_visible_from_cameras(
     mut commands: Commands,
-    // cameras: Query<
-    //     (&GlobalTransform, &CameraRenderMask),
-    //     (With<Camera3d>, Changed<GlobalTransform>),
-    // >,
-    cameras: Query<(&GlobalTransform, &CameraRenderMask), With<Camera3d>>,
+    cameras: Query<
+        (&GlobalTransform, &CameraRenderMask),
+        (
+            With<Camera3d>,
+            Changed<GlobalTransform>,
+            Without<LockViscluster>,
+        ),
+    >,
 ) {
     for (transform, camera_mask) in cameras {
         commands.run_system_cached_with(
             set_visible_from,
-            SetVisibleFromInput {
-                position: transform.translation().into(),
-                layer: camera_mask.0,
-            },
-        );
-        commands.run_system_cached_with(
-            set_debug_visible_from,
             SetVisibleFromInput {
                 position: transform.transform_point(Vec3::ZERO).into(),
                 layer: camera_mask.0,
@@ -110,104 +246,40 @@ fn set_visible_from_cameras(
     }
 }
 
-macro_rules! calc_visclusters {
-    ($input:expr, $visible_nodes:expr, $roots:expr, $tree:expr) => {
-        for (root, clusters) in $roots {
-            let mut cur_ent = root;
-
-            loop {
-                let Ok(cur_node) = $tree.get(cur_ent) else {
-                    if let Some(visible_entities) = clusters.visibility_map.get(&cur_ent) {
-                        $visible_nodes.extend(visible_entities.iter().copied());
-                    }
-
-                    break;
-                };
-
-                $visible_nodes.insert(cur_ent);
-
-                let p_normal = cur_node.midpoint.normal().as_dvec3();
-                let signed_distance =
-                    p_normal.dot($input.position.as_dvec3()) + cur_node.midpoint.d() as f64;
-                cur_ent = if signed_distance <= 0. {
-                    cur_node.front
-                } else {
-                    cur_node.back
-                };
-            }
-        }
-    };
-}
-
-fn set_debug_visible_from(
-    In(input): In<SetVisibleFromInput>,
-    mut commands: Commands,
-    mut gizmos: Gizmos,
-    roots: Query<(Entity, &VisClusters), With<VisTreeElements>>,
-    tree: Query<&VisChildren>,
-    mut elements: Query<
-        (Entity, &Children, Has<Wireframe>),
-        (With<VisTreeElementOf>, With<RenderLayers>),
-    >,
-    layers: Query<(&Aabb, Has<Wireframe>), (Without<VisTreeElementOf>, With<RenderLayers>)>,
-    mut visible_nodes: Local<EntityHashSet>,
-) {
-    visible_nodes.clear();
-
-    calc_visclusters!(input, visible_nodes, roots, tree);
-
-    for (entity, children, has_wireframe) in elements {
-        let visible = visible_nodes.contains(&entity);
-
-        // Optimisation so we don't recalculate render layers unless necessary.
-        // if visible == has_wireframe {
-        //     return;
-        // }
-
-        let entity_render_layers = children
-            .iter()
-            .filter_map(|entity| {
-                let Ok((transforms, child_layers)) = layers.get(*entity) else {
-                    debug!("Visdata child without elements: {entity}");
-                    return None;
-                };
-
-                // Optimisation so we don't recalculate render layers unless necessary.
-                // if visible == child_layers {
-                //     return Some(child_layers.clone());
-                // }
-
-                if visible {
-                    gizmos.axes(Transform::from_translation(transforms.center.into()), 1.);
-                    commands.entity(*entity).insert_if_new(Wireframe);
-                } else {
-                    commands.entity(*entity).try_remove::<Wireframe>();
-                }
-
-                Some(visible)
-            })
-            .reduce(|left, right| left || right)
-            .unwrap_or_default();
-
-        if entity_render_layers {
-            commands.entity(entity).insert_if_new(Wireframe);
-        } else {
-            commands.entity(entity).try_remove::<Wireframe>();
-        }
-    }
-}
-
 fn set_visible_from(
     In(input): In<SetVisibleFromInput>,
     roots: Query<(Entity, &VisClusters), With<VisTreeElements>>,
-    tree: Query<&VisChildren>,
+    tree: Query<(&GlobalTransform, &VisChildren)>,
     elements: Query<(Entity, &Children, &mut RenderLayers), With<VisTreeElementOf>>,
     mut layers: Query<&mut RenderLayers, Without<VisTreeElementOf>>,
     mut visible_nodes: Local<EntityHashSet>,
 ) {
     visible_nodes.clear();
 
-    calc_visclusters!(input, visible_nodes, roots, tree);
+    for (root, clusters) in roots {
+        let mut cur_ent = root;
+        loop {
+            let Ok((node_transform, cur_node)) = tree.get(cur_ent) else {
+                if let Some(visible_entities) = clusters.visibility_map.get(&cur_ent) {
+                    visible_nodes.extend(visible_entities.iter().copied());
+                }
+                break;
+            };
+            visible_nodes.insert(cur_ent);
+            let inverse_transform = node_transform.to_matrix().inverse();
+
+            let in_front = in_front(
+                cur_node.midpoint,
+                inverse_transform.transform_point3a(input.position),
+            );
+
+            cur_ent = if in_front {
+                cur_node.front
+            } else {
+                cur_node.back
+            };
+        }
+    }
 
     let camera_layer = RenderLayers::layer(input.layer);
 
@@ -241,40 +313,4 @@ fn set_visible_from(
 
         *render_layers = new_layers;
     }
-
-    // elements
-    //     .par_iter_mut()
-    //     .for_each(|(entity, children, mut render_layers)| {
-    //         let visible = visible_nodes.contains(&entity);
-
-    //         // Optimisation so we don't recalculate render layers unless necessary.
-    //         if visible == render_layers.intersects(&camera_layer) {
-    //             return;
-    //         }
-
-    //         let new_layers = if visible {
-    //             render_layers.clone().with(input.layer)
-    //         } else {
-    //             render_layers.clone().without(input.layer)
-    //         };
-
-    //         children.par_iter().for_each(|entity| {
-    //             visited_s.send(*entity).unwrap();
-    //             let Ok(child_layers) = layers.get(*entity) else {
-    //                 debug!("Visdata child without elements: {entity}");
-    //                 return;
-    //             };
-
-    //             // Optimisation so we don't recalculate render layers unless necessary.
-    //             if *child_layers == new_layers {
-    //                 return;
-    //             }
-
-    //             commands.command_scope(|mut commands| {
-    //                 commands.entity(*entity).insert(new_layers.clone());
-    //             });
-    //         });
-
-    //         *render_layers = new_layers;
-    //     });
 }

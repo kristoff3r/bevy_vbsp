@@ -26,6 +26,7 @@ use bevy::{
     },
 };
 use entities::spawn_bsp_model;
+use glam::Affine3A;
 use image::{Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,7 @@ use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 use tracing::instrument;
 
-use entities::spawn_mdl_model;
+use entities::{spawn_mdl_model, spawn_worldspawn};
 
 // Re-export everything while we use a lot of git dependencies
 pub use bevy_vpk;
@@ -45,8 +46,6 @@ pub use vmdl;
 pub use vmt_parser;
 pub use vpk;
 
-use crate::entities::spawn_worldspawn;
-
 pub struct BspLoaderPlugin;
 
 pub const SCALE: f32 = 39.37008f32.recip();
@@ -56,19 +55,20 @@ pub struct MapAssets {
     pub bsp: Handle<BspAsset>,
 }
 
-pub fn source_to_bevy(v: Vec3) -> Vec3 {
-    Vec3::new(-v.y, v.z, -v.x) * SCALE
-}
-
-pub fn bevy_to_source(v: Vec3) -> Vec3 {
-    Vec3::new(-v.z, -v.x, v.y) / SCALE
-}
+pub const SOURCE_TO_BEVY: Affine3A = Affine3A {
+    matrix3: Mat3A {
+        x_axis: Vec3A::new(0., 0., -SCALE),
+        y_axis: Vec3A::new(-SCALE, 0., 0.),
+        z_axis: Vec3A::new(0., SCALE, 0.),
+    },
+    translation: Vec3A::ZERO,
+};
 
 fn angles_to_bevy(angles: &Angles) -> Quat {
     Quat::from_euler(
         EulerRot::YXZ,
         angles.yaw.to_radians(),
-        angles.pitch.to_radians(),
+        -angles.pitch.to_radians(),
         angles.roll.to_radians(),
     )
 }
@@ -279,8 +279,7 @@ pub fn spawn_map_entities(
         }
         match class {
             "worldspawn" => {
-                // TODO: `spawn_worldspawn` (which uses the BSP tree to build meshes) seems to be broken,
-                // not all faces appear to be part of the tree.
+                dbg!(entity.data);
                 spawn_worldspawn(
                     &mut commands,
                     &bsp_asset,
@@ -323,8 +322,8 @@ pub fn spawn_map_entities(
                         })
                         .unwrap_or_default();
 
-                    let transform = Transform::from_translation(source_to_bevy(origin))
-                        .with_rotation(angles_to_bevy(&angles));
+                    let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                        * Transform::from_translation(origin).with_rotation(angles.as_quaternion());
 
                     if let Some(model) = model.as_value() {
                         if model.starts_with("*") {
@@ -383,6 +382,10 @@ pub fn spawn_map_entities(
         }
     }
 
+    let spawn_point_mesh = meshes.add(primitives::Cuboid {
+        half_size: Vec3::splat(0.5 * SCALE.recip()),
+    });
+
     for transform in bsp_asset
         .t_spawn_points
         .iter()
@@ -392,14 +395,7 @@ pub fn spawn_map_entities(
             Name::new("Spawn Point"),
             *transform,
             bsp_asset.default_material.clone(),
-            Mesh3d(
-                meshes.add(
-                    primitives::Cuboid {
-                        half_size: Vec3::splat(0.5),
-                    }
-                    .mesh(),
-                ),
-            ),
+            Mesh3d(spawn_point_mesh.clone()),
         ));
     }
 
@@ -412,8 +408,9 @@ pub fn spawn_map_entities(
             .as_str()
             .to_ascii_lowercase();
 
-        let transform = Transform::from_translation(source_to_bevy(static_prop.origin))
-            .with_rotation(angles_to_bevy(&static_prop.angles));
+        let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+            * Transform::from_translation(static_prop.origin)
+                .with_rotation(static_prop.angles.as_quaternion());
 
         let vhv;
         let mut vertex_lighting = None;
@@ -842,8 +839,8 @@ impl AssetLoader for BspAssetLoader {
                     })
                     .unwrap_or_default();
 
-                let transform = Transform::from_translation(source_to_bevy(origin))
-                    .with_rotation(angles_to_bevy(&angles));
+                let mut transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                    * Transform::from_translation(origin).with_rotation(angles.as_quaternion());
                 match entity.class.as_str() {
                     "info_player_terrorist" => {
                         t_spawn_points.push(transform);

@@ -13,11 +13,15 @@ use bevy::{
 };
 use itertools::{Either, Itertools};
 use qbsp::data::LightmapStyle;
+use rand::{RngExt as _, SeedableRng as _, rngs::SmallRng};
 use serde::Deserialize;
 
-use crate::visdata::{VisChildren, VisClusters, VisTreeElementOf};
+use crate::{
+    SOURCE_TO_BEVY,
+    visdata::{DebugViscluster, VisChildren, VisClusters, VisTreeElementOf},
+};
 
-use super::{BspAsset, source_to_bevy};
+use super::BspAsset;
 
 // OLD CODE:
 //
@@ -235,6 +239,7 @@ pub struct WorldSpawn {
     _classname: String,
 }
 
+#[derive(Clone)]
 struct BspMesh {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
@@ -254,6 +259,24 @@ impl BspMesh {
             .collect();
 
         Collider::trimesh(self.positions.clone(), indices)
+    }
+
+    fn merge(&mut self, other: &Self) {
+        let idx_offset: u16 = self
+            .positions
+            .len()
+            .try_into()
+            .expect("Vertices out of range for u16");
+
+        self.positions.extend_from_slice(&other.positions);
+        self.normals.extend_from_slice(&other.normals);
+        self.texture_uvs.extend_from_slice(&other.texture_uvs);
+        self.lightmap_uvs.extend_from_slice(&other.lightmap_uvs);
+
+        self.indices.extend(other.indices.iter().map(|i| {
+            i.checked_add(idx_offset)
+                .expect("Idx overflowed during merge")
+        }));
     }
 }
 
@@ -287,13 +310,13 @@ fn mesh_from_face(
             (
                 face.texture().uv(position),
                 lightmap_uv_rect.min + lightmap_uv_rect.size() * lightmap_uv,
-                source_to_bevy(model_origin + position),
+                model_origin + position,
             )
         })
         .multiunzip();
 
     let indices: Vec<_> = face.triangulate_indices().map(|i| i as _).collect();
-    let normals = vec![source_to_bevy(face.normal()); positions.len()];
+    let normals = vec![face.normal(); positions.len()];
 
     Some(BspMesh {
         positions,
@@ -311,8 +334,16 @@ pub fn spawn_worldspawn(
     model: vbsp::Handle<'_, vbsp::Model>,
     styles_to_image: &HashMap<LightmapStyle, (Handle<Image>, UVec2)>,
     face_to_lightmap_uv: &HashMap<u32, vbsp::Rect>,
-) {
+) -> Entity {
+    struct ConstructedFace {
+        texture_name: String,
+        mesh: BspMesh,
+        lightmap: Option<Handle<Image>>,
+    }
+
     let first_model_face = model.first_face;
+
+    dbg!(model.origin);
 
     let faces = model
         .faces_with_id()
@@ -335,39 +366,16 @@ pub fn spawn_worldspawn(
                 .unwrap_or_default();
 
             let Some(mesh) = mesh_from_face(Vec3::ZERO, &face, &lightmap_uv_rect) else {
-                return commands.spawn(()).id();
+                return None;
             };
-
-            let collider = mesh.collider();
-            let mesh_handle = meshes.add(mesh);
 
             let texture_name = face.texture().name().to_ascii_lowercase();
 
-            let material = bsp_asset
-                .materials
-                .get(&texture_name)
-                .cloned()
-                .unwrap_or_else(|| {
-                    warn!("No material for BSP model: {texture_name}");
-                    bsp_asset.default_material.0.clone()
-                });
-
-            let mut out = commands.spawn((
-                CollisionMargin(0.01),
-                collider,
-                RigidBody::Static,
-                Mesh3d(mesh_handle),
-                MeshMaterial3d(material),
-            ));
-
-            if let Some(lightmap) = lightmap_handle {
-                out.insert(Lightmap {
-                    image: lightmap.0.clone(),
-                    ..Default::default()
-                });
-            }
-
-            out.id()
+            Some(ConstructedFace {
+                texture_name,
+                mesh,
+                lightmap: lightmap_handle.map(|(handle, _)| handle.clone()),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -376,9 +384,13 @@ pub fn spawn_worldspawn(
         panic!("Worldspawn model without root node!");
     };
 
-    let root_ent = commands.spawn(()).id();
+    let root_ent = commands
+        .spawn(Transform::from_matrix(SOURCE_TO_BEVY.into()))
+        .id();
 
-    let mut clusters = HashMap::<u32, EntityHashSet>::new();
+    let mut cluster_leaves = HashMap::<Option<u32>, EntityHashSet>::new();
+    let mut cluster_targets = HashMap::<Option<u32>, EntityHashSet>::new();
+    let mut all_targets = EntityHashSet::new();
 
     struct CurNode<'a> {
         entity: Entity,
@@ -392,7 +404,7 @@ pub fn spawn_worldspawn(
         path_to_root: vec![root_ent],
     }];
 
-    let mut parents = EntityHashMap::<Entity>::new();
+    let mut parents = vec![None::<Entity>; faces.len()];
 
     while let Some(cur) = nodes.pop() {
         let [front, back] = cur
@@ -400,7 +412,10 @@ pub fn spawn_worldspawn(
             .children()
             .expect("Malformed vistree")
             .map(|child| {
-                let child_ent = commands.spawn((RenderLayers::none(), VisTreeElementOf { root: root_ent })).id();
+                let mut child_ent = commands.spawn((Transform::default(), RenderLayers::none(), ChildOf(cur.entity), VisTreeElementOf { root: root_ent }));
+                let child_ent_id = child_ent.id();
+
+                all_targets.insert(child_ent_id);
 
                 let model_face_range = model.first_face..model.first_face + model.face_count;
 
@@ -415,20 +430,21 @@ pub fn spawn_worldspawn(
                                 continue;
                             }
                             let Some(face_entity) =
-                                faces.get((face_idx - first_model_face) as usize)
+                                parents.get_mut((face_idx - first_model_face) as usize)
                             else {
                                 continue;
                             };
 
-                            let _ = parents.try_insert(*face_entity, child_ent);
+                            // TODO: How should we handle faces being parented to nodes but not leaves?
+                            face_entity.get_or_insert(child_ent_id);
                         }
 
                         let mut new_path = cur.path_to_root.clone();
 
-                        new_path.push(child_ent);
+                        new_path.push(child_ent_id);
 
                         nodes.push(CurNode {
-                            entity: child_ent,
+                            entity: child_ent_id,
                             handle: node,
                             path_to_root: new_path,
                         });
@@ -443,29 +459,37 @@ pub fn spawn_worldspawn(
                                 continue;
                             }
                             let Some(face_entity) =
-                                faces.get((face_idx - first_model_face) as usize)
+                                parents.get_mut((face_idx - first_model_face) as usize)
                             else {
                                 continue;
                             };
 
-                            parents.insert(*face_entity, child_ent);
+                            *face_entity = Some(child_ent_id);
                         }
 
-                        if let Ok(cluster_u32) = leaf.cluster.try_into() {
-                            clusters.entry(cluster_u32).or_default().extend(
-                                std::iter::once(child_ent)//.chain(cur.path_to_root.iter().copied()),
-                            );
-                        }
+                        let cluster_u32 = leaf.cluster.try_into().ok();
+
+                        child_ent.insert(DebugViscluster(cluster_u32));
+
+                        cluster_leaves.entry(cluster_u32).or_default().insert(
+                            child_ent_id
+                        );
+                        // Source has a weird system where it has some faces parented to nodes rather than
+                        // leaves, which means that, when treated as a view target, clusters contain all
+                        // nodes that themselves contain leaves of that cluster.
+                        cluster_targets.entry(cluster_u32).or_default().extend(
+                            std::iter::once(child_ent_id).chain(cur.path_to_root.iter().copied())
+                        );
                     }
                 }
 
-                child_ent
+                child_ent_id
             });
 
         let plane = cur.handle.plane();
 
-        let (normal, dist) = source_to_bevy(plane.normal()).normalize_and_length();
-        let dist = dist * plane.dist;
+        let normal = plane.normal();
+        let dist = -plane.dist;
 
         commands.entity(cur.entity).insert(VisChildren {
             front,
@@ -474,30 +498,70 @@ pub fn spawn_worldspawn(
         });
     }
 
-    for face in faces
-        .iter()
-        .copied()
-        .filter(|face| !parents.contains_key(face))
-    {
-        commands
-            .entity(face)
-            .insert(RenderLayers::default())
-            .insert(ChildOf(root_ent));
+    let faces_with_parents = faces.into_iter().zip(parents);
+
+    let mut parented_faces =
+        HashMap::<(Option<Entity>, String, Option<Handle<Image>>), BspMesh>::new();
+
+    for (face, parent) in faces_with_parents {
+        let Some(face) = face else {
+            continue;
+        };
+
+        parented_faces
+            .entry((parent, face.texture_name.clone(), face.lightmap.clone()))
+            .and_modify(|existing| existing.merge(&face.mesh))
+            .or_insert(face.mesh);
     }
 
-    for (face, parent) in parents {
-        commands
-            .entity(face)
-            .insert(RenderLayers::none())
-            .insert(ChildOf(parent));
+    for ((parent, texture_name, lightmap), mesh) in parented_faces {
+        let material = bsp_asset
+            .materials
+            .get(&texture_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                warn!("No material for BSP model: {texture_name}");
+                bsp_asset.default_material.0.clone()
+            });
+
+        let collider = mesh.collider();
+        let mesh_handle = meshes.add(mesh);
+
+        let mut out = commands.spawn((
+            CollisionMargin(0.01),
+            collider,
+            RigidBody::Static,
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material),
+        ));
+
+        if let Some(parent) = parent {
+            out.insert((RenderLayers::none(), ChildOf(parent)));
+        } else {
+            out.insert((RenderLayers::default(), ChildOf(root_ent)));
+        }
+
+        if let Some(lightmap) = lightmap {
+            out.insert(Lightmap {
+                image: lightmap.clone(),
+                ..Default::default()
+            });
+        }
     }
 
     let mut visibility_map = EntityHashMap::<EntityHashSet>::new();
 
-    for (cluster_idx, entities) in &clusters {
-        let visible_clusters = bsp_asset.bsp.vis_data.visible_clusters(*cluster_idx);
-
-        let visible_entities = visible_clusters.filter_map(|i| clusters.get(&i)).flatten();
+    for (cluster_idx, entities) in &cluster_leaves {
+        let visible_entities = cluster_idx
+            .map(|idx| {
+                let visible_clusters = bsp_asset.bsp.vis_data.visible_clusters(idx);
+                Either::Left(
+                    visible_clusters
+                        .filter_map(|i| cluster_targets.get(&Some(i)))
+                        .flatten(),
+                )
+            })
+            .unwrap_or(Either::Right(all_targets.iter()));
 
         for entity in entities {
             visibility_map
@@ -510,6 +574,8 @@ pub fn spawn_worldspawn(
     commands
         .entity(root_ent)
         .insert(VisClusters { visibility_map });
+
+    root_ent
 }
 
 pub fn spawn_bsp_model(
@@ -613,8 +679,8 @@ pub fn spawn_mdl_model(
                 .vertices()
                 .map(|v| {
                     (
-                        source_to_bevy(Vec3::new(v.position.x, v.position.y, v.position.z)),
-                        source_to_bevy(Vec3::new(v.normal.x, v.normal.y, v.normal.z)),
+                        Vec3::new(v.position.x, v.position.y, v.position.z),
+                        Vec3::new(v.normal.x, v.normal.y, v.normal.z),
                         v.texture_coordinates,
                     )
                 })

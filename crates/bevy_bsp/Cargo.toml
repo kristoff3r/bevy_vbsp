@@ -15,24 +15,25 @@ bevy.workspace = true
 bevy_vpk.workspace = true
 
 anyhow.workspace = true
-async-fs.workspace = true
 astcenc-rs.workspace = true
+async-fs.workspace = true
 futures-io.workspace = true
+glam.workspace = true
 image.workspace = true
 itertools.workspace = true
-glam.workspace = true
 pin-project.workspace = true
-serde.workspace = true
+rand.workspace = true
 rayon.workspace = true
+serde.workspace = true
 tracing.workspace = true
 
-vmdl.workspace = true
+qbsp.workspace = true
 vbsp.workspace = true
 vdf-reader.workspace = true
+vmdl.workspace = true
+vmt-parser.workspace = true
 vpk.workspace = true
 vtf.workspace = true
-vmt-parser.workspace = true
-qbsp.workspace = true
 
 # Debugging
 humansize = { version = "2.1", optional = true }

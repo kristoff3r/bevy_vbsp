@@ -6,7 +6,6 @@ use bevy::camera::Exposure;
 use bevy::camera::visibility::RenderLayers;
 use bevy::color::palettes::css::WHITE;
 use bevy::math::bounding::{Aabb3d, BoundingVolume as _};
-use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
@@ -14,10 +13,8 @@ use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
 use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
-use bevy_bsp::visdata::{CameraRenderMask, VisdataPlugin};
-use bevy_bsp::{
-    BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, bevy_to_source, spawn_map_entities,
-};
+use bevy_bsp::visdata::{CameraRenderMask, LockViscluster, VisdataPlugin};
+use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
 use bevy_enhanced_input::prelude::{
     Axial, Binding, Bindings, Cardinal, DeadZone, InputContextAppExt, Scale,
@@ -210,7 +207,6 @@ fn main() {
         EnhancedInputPlugin,
         AhoyPlugins::default(),
         VisdataPlugin,
-        WireframePlugin::default(),
     ))
     .insert_resource(GlobalAmbientLight {
         color: ClearColor::default().0,
@@ -218,7 +214,6 @@ fn main() {
         affects_lightmapped_meshes: false,
     })
     .init_resource::<PhysAssets>()
-    .insert_resource(UpdateVisdata(false))
     .init_state::<MapState>()
     .add_systems(Startup, load_vpks)
     .add_observer(load_map)
@@ -328,7 +323,6 @@ pub enum MapState {
 use bevy::ecs::message::MessageCursor;
 use bevy::input::mouse::MouseMotion;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use itertools::Itertools;
 
 pub mod prelude {
     pub use crate::*;
@@ -419,12 +413,21 @@ impl Default for KeyBindings {
 }
 
 fn toggle_update_visdata(
-    mut update_visdata: ResMut<UpdateVisdata>,
+    mut commands: Commands,
+    cameras: Query<(Entity, Has<LockViscluster>), With<Camera>>,
     keys: Res<ButtonInput<KeyCode>>,
     key_bindings: Res<KeyBindings>,
 ) {
     if keys.just_pressed(key_bindings.toggle_update_visdata) {
-        update_visdata.0 = !update_visdata.0;
+        for (entity, is_locked) in cameras {
+            let mut entity = commands.entity(entity);
+
+            if is_locked {
+                entity.remove::<LockViscluster>();
+            } else {
+                entity.insert(LockViscluster);
+            }
+        }
     }
 }
 
@@ -473,45 +476,6 @@ fn spawn_cube(
         Transform::from_translation(intersection),
         phys.cube_bundle.clone(),
     ));
-}
-
-#[derive(Resource)]
-struct UpdateVisdata(bool);
-
-fn set_player_viscluster(
-    update_visdata: Res<UpdateVisdata>,
-    camera: Option<Single<(&GlobalTransform, &mut RenderLayers), With<Camera>>>,
-    map_assets: Res<MapAssets>,
-    bsp_asset_data: Res<Assets<BspAsset>>,
-) {
-    if !update_visdata.0 {
-        return;
-    }
-
-    let Some(mut camera) = camera else {
-        dbg!();
-        return;
-    };
-
-    let Some(bsp) = bsp_asset_data.get(&map_assets.bsp) else {
-        dbg!();
-        return;
-    };
-
-    let source_position = bevy_to_source(camera.0.translation());
-
-    let layer = bsp
-        .bsp
-        .leaf_at(source_position)
-        // TODO: The `+ 1` should be handled better, but we can't use `usize::MAX` since `RenderLayers` is
-        // essentially a bitvec and that will make every render layer type huge.
-        .and_then(|leaf| usize::try_from(leaf.cluster).ok())
-        .map(|cluster| cluster + 1)
-        .unwrap_or_default();
-
-    if !camera.1.iter().contains(&layer) {
-        *camera.1 = RenderLayers::from_layers(&[layer, 0]);
-    }
 }
 
 /// Used in queries when you want flycams and not other cameras
@@ -566,65 +530,69 @@ fn setup_walk_player(
         ..*spawn_point
     };
 
-    // // Spawn the player entity
-    // let player = commands
-    //     .spawn((
-    //         // The character controller configuration
-    //         CharacterController::default(),
-    //         transform,
-    //         RigidBody::Kinematic,
-    //         Collider::cylinder(0.7, HEIGHT),
-    //         Mass(90.0),
-    //         // Configure inputs
-    //         PlayerInput,
-    //         actions!(PlayerInput[
-    //             (
-    //                 Action::<Movement>::new(),
-    //                 DeadZone::default(),
-    //                 Bindings::spawn((
-    //                     Cardinal::wasd_keys(),
-    //                     Axial::left_stick()
-    //                 ))
-    //             ),
-    //             (
-    //                 Action::<Jump>::new(),
-    //                 bindings![KeyCode::Space,  GamepadButton::South],
-    //             ),
-    //             (
-    //                 Action::<RotateCamera>::new(),
-    //                 Scale::splat(0.1),
-    //                 Bindings::spawn((
-    //                     Spawn(Binding::mouse_motion()),
-    //                     Axial::right_stick()
-    //                 ))
-    //             ),
-    //         ]),
-    //     ))
-    //     .id();
+    if false {
+        // Spawn the player entity
+        let player = commands
+            .spawn((
+                // The character controller configuration
+                CharacterController::default(),
+                transform,
+                RigidBody::Kinematic,
+                Collider::cylinder(0.7, HEIGHT),
+                Mass(90.0),
+                // Configure inputs
+                PlayerInput,
+                actions!(PlayerInput[
+                    (
+                        Action::<Movement>::new(),
+                        DeadZone::default(),
+                        Bindings::spawn((
+                            Cardinal::wasd_keys(),
+                            Axial::left_stick()
+                        ))
+                    ),
+                    (
+                        Action::<Jump>::new(),
+                        bindings![KeyCode::Space,  GamepadButton::South],
+                    ),
+                    (
+                        Action::<RotateCamera>::new(),
+                        Scale::splat(0.1),
+                        Bindings::spawn((
+                            Spawn(Binding::mouse_motion()),
+                            Axial::right_stick()
+                        ))
+                    ),
+                ]),
+            ))
+            .id();
 
-    // // Spawn the camera
-    // commands.spawn((
-    //     Camera3d::default(),
-    //     RenderLayers::layer(0),
-    //     CameraRenderMask(1),
-    //     Hdr,
-    //     Bloom::default(),
-    //     Exposure { ev100: 6. },
-    //     Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    //     // Enable the optional builtin camera controller
-    //     CharacterControllerCameraOf::new(player),
-    // ));
+        // Spawn the camera
+        let mut camera = commands.spawn((
+            Camera3d::default(),
+            RenderLayers::layer(0),
+            Hdr,
+            Bloom::default(),
+            Exposure { ev100: 6. },
+            Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+            // Enable the optional builtin camera controller
+            CharacterControllerCameraOf::new(player),
+        ));
 
-    commands.spawn((
-        Camera3d::default(),
-        RenderLayers::layer(0),
-        CameraRenderMask(1),
-        Hdr,
-        Bloom::default(),
-        Exposure::INDOOR,
-        transform.looking_at(Vec3::ZERO, Vec3::Y),
-        FlyCam,
-    ));
+        camera.insert(CameraRenderMask(1));
+    } else {
+        let mut camera = commands.spawn((
+            Camera3d::default(),
+            RenderLayers::layer(0),
+            Hdr,
+            Bloom::default(),
+            Exposure::INDOOR,
+            transform.looking_at(Vec3::ZERO, Vec3::Y),
+            FlyCam,
+        ));
+
+        camera.insert(CameraRenderMask(1));
+    }
 }
 
 /// Handles keyboard input and movement

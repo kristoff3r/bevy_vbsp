@@ -16,26 +16,27 @@ bevy_enhanced_input = "0.24"
 glam = "0.30"
 
 # NOTE: Using fork that removes unnecessary noisy log lines
-vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
-vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
-vtf = "0.3"
+qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
 vbsp = { git = "https://github.com/eira-fransham/vbsp.git", branch = "visdata" }
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
-qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
+vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
 vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
+vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
+vtf = "0.3"
 
 anyhow = "1.0"
-async-fs = "2.0"
 astcenc-rs = "0.2"
+async-fs = "2.0"
 cfg-if = "1.0"
 clap = "4.5"
 futures-io = "0.3"
 image = "0.25"
 itertools = "0.14"
-tracing = "0.1"
 pin-project = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+rand = "0.10"
 rayon = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
 
 # [patch."https://github.com/eira-fransham/qbsp.git"]
 # qbsp = { path = "../qbsp" }
@@ -52,6 +53,18 @@ rayon = "1.11"
 # TODO: Some internals need to be exposed, so we have a vendored fork
 [patch."https://codeberg.org/icewind/vmt-parser.git"]
 vmt-parser = { path = "crates/vmt-parser" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.bevy]
+opt-level = 3
+
+[profile.dev.package.avian3d]
+opt-level = 3
+
+[profile.dev.package.glam]
+opt-level = 3
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]

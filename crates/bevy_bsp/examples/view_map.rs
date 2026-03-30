@@ -5,7 +5,9 @@ use avian3d::prelude::{Collider, Mass, RigidBody, SpatialQuery, SpatialQueryFilt
 use bevy::camera::Exposure;
 use bevy::camera::visibility::RenderLayers;
 use bevy::color::palettes::css::WHITE;
+use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
 use bevy::math::bounding::{Aabb3d, BoundingVolume as _};
+use bevy::pbr::wireframe::WireframePlugin;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
@@ -13,7 +15,7 @@ use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
 use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
-use bevy_bsp::visdata::{CameraRenderMask, LockViscluster, VisdataPlugin};
+use bevy_bsp::visdata::{CameraRenderMask, DisableVisibility, LockViscluster, VisdataPlugin};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
 use bevy_enhanced_input::prelude::{
@@ -200,13 +202,21 @@ fn main() {
     // NOTE: VpkPlugin must come before DefaultPlugins due to registering an AssetSource
     app.add_plugins((
         VpkPlugin,
-        DefaultPlugins,
+        DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                present_mode: PresentMode::AutoNoVsync,
+                ..default()
+            }),
+            ..default()
+        }),
         BspLoaderPlugin,
         PlayerPlugin,
         PhysicsPlugins::default(),
         EnhancedInputPlugin,
         AhoyPlugins::default(),
         VisdataPlugin,
+        FpsOverlayPlugin::default(),
+        // WireframePlugin::default(),
     ))
     .insert_resource(GlobalAmbientLight {
         color: ClearColor::default().0,
@@ -322,7 +332,7 @@ pub enum MapState {
 // Inlined version of bevy_flycam
 use bevy::ecs::message::MessageCursor;
 use bevy::input::mouse::MouseMotion;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 
 pub mod prelude {
     pub use crate::*;
@@ -393,6 +403,7 @@ pub struct KeyBindings {
     pub move_descend: KeyCode,
     pub toggle_grab_cursor: KeyCode,
     pub toggle_update_visdata: KeyCode,
+    pub toggle_visibility: KeyCode,
     pub spawn_cube: KeyCode,
 }
 
@@ -407,6 +418,7 @@ impl Default for KeyBindings {
             move_descend: KeyCode::ControlLeft,
             toggle_grab_cursor: KeyCode::Escape,
             toggle_update_visdata: KeyCode::KeyT,
+            toggle_visibility: KeyCode::KeyR,
             spawn_cube: KeyCode::KeyP,
         }
     }
@@ -426,6 +438,25 @@ fn toggle_update_visdata(
                 entity.remove::<LockViscluster>();
             } else {
                 entity.insert(LockViscluster);
+            }
+        }
+    }
+}
+
+fn toggle_visibility(
+    mut commands: Commands,
+    cameras: Query<(Entity, Has<DisableVisibility>), With<Camera>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    key_bindings: Res<KeyBindings>,
+) {
+    if keys.just_pressed(key_bindings.toggle_visibility) {
+        for (entity, is_locked) in cameras {
+            let mut entity = commands.entity(entity);
+
+            if is_locked {
+                entity.remove::<DisableVisibility>();
+            } else {
+                entity.insert(DisableVisibility);
             }
         }
     }
@@ -704,7 +735,13 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                (player_move, player_look, toggle_update_visdata, cursor_grab),
+                (
+                    player_move,
+                    player_look,
+                    toggle_visibility,
+                    toggle_update_visdata,
+                    cursor_grab,
+                ),
             );
     }
 }

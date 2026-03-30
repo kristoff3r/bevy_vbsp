@@ -6,9 +6,13 @@ use avian3d::prelude::{Collider, CollisionMargin, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
     camera::{primitives::HalfSpace, visibility::RenderLayers},
-    ecs::entity::{EntityHashMap, EntityHashSet},
+    ecs::entity::EntityHashSet,
+    math::bounding::Aabb3d,
     mesh::{Indices, PrimitiveTopology},
-    pbr::Lightmap,
+    pbr::{
+        Lightmap,
+        wireframe::{Wireframe, WireframeColor},
+    },
     prelude::*,
 };
 use itertools::{Either, Itertools};
@@ -18,7 +22,7 @@ use serde::Deserialize;
 
 use crate::{
     SOURCE_TO_BEVY,
-    visdata::{DebugViscluster, VisChildren, VisClusters, VisTreeElementOf},
+    visdata::{CalculateVisleaf, DebugViscluster, VisChildren, VisTreeElementOf, Visible},
 };
 
 use super::BspAsset;
@@ -343,8 +347,6 @@ pub fn spawn_worldspawn(
 
     let first_model_face = model.first_face;
 
-    dbg!(model.origin);
-
     let faces = model
         .faces_with_id()
         .map(|(face_idx, face)| {
@@ -385,10 +387,13 @@ pub fn spawn_worldspawn(
     };
 
     let root_ent = commands
-        .spawn(Transform::from_matrix(SOURCE_TO_BEVY.into()))
+        .spawn((
+            Visibility::Visible,
+            Transform::from_matrix(SOURCE_TO_BEVY.into()),
+        ))
         .id();
 
-    let mut cluster_leaves = HashMap::<Option<u32>, EntityHashSet>::new();
+    let mut cluster_leaves = HashMap::<Option<u32>, (Entity, Aabb3d)>::new();
     let mut cluster_targets = HashMap::<Option<u32>, EntityHashSet>::new();
     let mut all_targets = EntityHashSet::new();
 
@@ -412,15 +417,20 @@ pub fn spawn_worldspawn(
             .children()
             .expect("Malformed vistree")
             .map(|child| {
-                let mut child_ent = commands.spawn((Transform::default(), RenderLayers::none(), ChildOf(cur.entity), VisTreeElementOf { root: root_ent }));
-                let child_ent_id = child_ent.id();
-
-                all_targets.insert(child_ent_id);
-
                 let model_face_range = model.first_face..model.first_face + model.face_count;
 
                 match child {
                     Either::Left(node) => {
+                        let child_ent_id = commands.spawn((
+                            Visibility::Visible,
+                            Transform::default(),
+                            RenderLayers::none(),
+                            ChildOf(cur.entity),
+                            VisTreeElementOf { root: root_ent },
+                        )).id();
+
+                        all_targets.insert(child_ent_id);
+
                         for (face_idx, _) in node.faces_with_id() {
                             if !model_face_range.contains( &face_idx) {
                                 let missing_face = bsp_asset.bsp.face(face_idx as _);
@@ -448,8 +458,29 @@ pub fn spawn_worldspawn(
                             handle: node,
                             path_to_root: new_path,
                         });
+
+                        child_ent_id
                     }
                     Either::Right(leaf) => {
+                        let cluster_u32 = leaf.cluster.try_into().ok();
+
+                        let (child_ent_id, _) = cluster_leaves.entry(cluster_u32).or_insert_with(|| {
+                            let aabb = Aabb3d::from_min_max(leaf.mins, leaf.maxs);
+
+                            let child_ent_id = commands.spawn((
+                                Visibility::Visible,
+                                Transform::default(),
+                                RenderLayers::none(),
+                                ChildOf(root_ent),
+                                VisTreeElementOf { root: root_ent },
+                                DebugViscluster(cluster_u32),
+                            )).id();
+
+                            all_targets.insert(child_ent_id);
+
+                            (child_ent_id, aabb)
+                        });
+
                         for (face_idx, _) in leaf.faces_with_id() {
                             if !model_face_range.contains( &face_idx) {
                                 let missing_face = bsp_asset.bsp.face(face_idx as _);
@@ -464,26 +495,19 @@ pub fn spawn_worldspawn(
                                 continue;
                             };
 
-                            *face_entity = Some(child_ent_id);
+                            *face_entity = Some(*child_ent_id);
                         }
 
-                        let cluster_u32 = leaf.cluster.try_into().ok();
-
-                        child_ent.insert(DebugViscluster(cluster_u32));
-
-                        cluster_leaves.entry(cluster_u32).or_default().insert(
-                            child_ent_id
-                        );
                         // Source has a weird system where it has some faces parented to nodes rather than
                         // leaves, which means that, when treated as a view target, clusters contain all
                         // nodes that themselves contain leaves of that cluster.
                         cluster_targets.entry(cluster_u32).or_default().extend(
-                            std::iter::once(child_ent_id).chain(cur.path_to_root.iter().copied())
+                            std::iter::once(*child_ent_id).chain(cur.path_to_root.iter().copied())
                         );
+
+                        *child_ent_id
                     }
                 }
-
-                child_ent_id
             });
 
         let plane = cur.handle.plane();
@@ -500,21 +524,67 @@ pub fn spawn_worldspawn(
 
     let faces_with_parents = faces.into_iter().zip(parents);
 
-    let mut parented_faces =
-        HashMap::<(Option<Entity>, String, Option<Handle<Image>>), BspMesh>::new();
+    let mut parented_faces = HashMap::<(Entity, String, Option<Handle<Image>>), BspMesh>::new();
+    let mut orphaned_meshes = Vec::<(String, Option<Handle<Image>>, BspMesh)>::new();
 
     for (face, parent) in faces_with_parents {
         let Some(face) = face else {
             continue;
         };
 
-        parented_faces
-            .entry((parent, face.texture_name.clone(), face.lightmap.clone()))
-            .and_modify(|existing| existing.merge(&face.mesh))
-            .or_insert(face.mesh);
+        match parent {
+            Some(parent) => {
+                parented_faces
+                    .entry((parent, face.texture_name, face.lightmap))
+                    .and_modify(|existing| existing.merge(&face.mesh))
+                    .or_insert(face.mesh);
+            }
+            None => orphaned_meshes.push((face.texture_name, face.lightmap, face.mesh)),
+        }
     }
 
     for ((parent, texture_name, lightmap), mesh) in parented_faces {
+        let material = bsp_asset
+            .materials
+            .get(&texture_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                warn!("No material for BSP model: {texture_name}");
+                bsp_asset.default_material.0.clone()
+            });
+
+        let wireframe_color = Hsva::hsv(
+            SmallRng::seed_from_u64(parent.to_bits()).random_range(0f32..360f32),
+            0.8,
+            1.,
+        );
+
+        let collider = mesh.collider();
+        let mesh_handle = meshes.add(mesh);
+
+        let mut out = commands.spawn((
+            CollisionMargin(0.01),
+            collider,
+            RigidBody::Static,
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material),
+            Wireframe,
+            WireframeColor {
+                color: wireframe_color.into(),
+            },
+            RenderLayers::none(),
+            ChildOf(parent),
+        ));
+
+        if let Some(lightmap) = lightmap {
+            out.insert(Lightmap {
+                image: lightmap.clone(),
+                ..Default::default()
+            });
+        }
+    }
+
+    for (texture_name, lightmap, mesh) in orphaned_meshes {
         let material = bsp_asset
             .materials
             .get(&texture_name)
@@ -528,18 +598,27 @@ pub fn spawn_worldspawn(
         let mesh_handle = meshes.add(mesh);
 
         let mut out = commands.spawn((
+            CalculateVisleaf,
             CollisionMargin(0.01),
             collider,
             RigidBody::Static,
             Mesh3d(mesh_handle),
             MeshMaterial3d(material),
+            Wireframe,
+            VisTreeElementOf { root: root_ent },
+            RenderLayers::none(),
+            ChildOf(root_ent),
         ));
 
-        if let Some(parent) = parent {
-            out.insert((RenderLayers::none(), ChildOf(parent)));
-        } else {
-            out.insert((RenderLayers::default(), ChildOf(root_ent)));
-        }
+        let wireframe_color = Hsva::hsv(
+            SmallRng::seed_from_u64(out.id().to_bits()).random_range(0f32..360f32),
+            0.8,
+            1.,
+        );
+
+        out.insert(WireframeColor {
+            color: wireframe_color.into(),
+        });
 
         if let Some(lightmap) = lightmap {
             out.insert(Lightmap {
@@ -547,11 +626,11 @@ pub fn spawn_worldspawn(
                 ..Default::default()
             });
         }
+
+        all_targets.insert(out.id());
     }
 
-    let mut visibility_map = EntityHashMap::<EntityHashSet>::new();
-
-    for (cluster_idx, entities) in &cluster_leaves {
+    for (cluster_idx, (cluster_entity, _)) in &cluster_leaves {
         let visible_entities = cluster_idx
             .map(|idx| {
                 let visible_clusters = bsp_asset.bsp.vis_data.visible_clusters(idx);
@@ -563,17 +642,10 @@ pub fn spawn_worldspawn(
             })
             .unwrap_or(Either::Right(all_targets.iter()));
 
-        for entity in entities {
-            visibility_map
-                .entry(*entity)
-                .or_default()
-                .extend(visible_entities.clone());
+        for visible_entity in visible_entities {
+            commands.spawn(Visible::new(*cluster_entity, *visible_entity));
         }
     }
-
-    commands
-        .entity(root_ent)
-        .insert(VisClusters { visibility_map });
 
     root_ent
 }
@@ -658,7 +730,12 @@ pub fn spawn_bsp_model(
         }
 
         if let Some(collider) = collider {
-            entity.insert((collider, RigidBody::Static));
+            entity.insert((
+                CalculateVisleaf,
+                collider,
+                RigidBody::Static,
+                RenderLayers::none(),
+            ));
         } else {
             warn!("No collider for texture: {}", texture_name);
         }

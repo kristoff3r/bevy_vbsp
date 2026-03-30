@@ -15,6 +15,7 @@ use anyhow::bail;
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
     asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader},
+    camera::visibility::RenderLayers,
     core_pipeline::Skybox,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
     math::primitives,
@@ -45,6 +46,8 @@ pub use vdf_reader;
 pub use vmdl;
 pub use vmt_parser;
 pub use vpk;
+
+use crate::visdata::CalculateVisleaf;
 
 pub struct BspLoaderPlugin;
 
@@ -279,7 +282,6 @@ pub fn spawn_map_entities(
         }
         match class {
             "worldspawn" => {
-                dbg!(entity.data);
                 spawn_worldspawn(
                     &mut commands,
                     &bsp_asset,
@@ -308,18 +310,11 @@ pub fn spawn_map_entities(
                         })
                         .unwrap_or_default();
 
-                    let angles = entity
+                    let angles: Angles = entity
                         .data
                         .get("angles")
                         .and_then(|e| e.as_value())
-                        .and_then(|s| {
-                            let mut parts = s.split(' ');
-                            Some(Angles {
-                                pitch: parts.next()?.parse().ok()?,
-                                yaw: parts.next()?.parse().ok()?,
-                                roll: parts.next()?.parse().ok()?,
-                            })
-                        })
+                        .and_then(|s| s.parse().ok())
                         .unwrap_or_default();
 
                     let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
@@ -364,9 +359,11 @@ pub fn spawn_map_entities(
 
                             for (mesh, material, collider) in bundles {
                                 let mut new_entity = commands.spawn((
+                                    CalculateVisleaf,
                                     Mesh3d(mesh),
                                     MeshMaterial3d(material),
                                     transform,
+                                    RenderLayers::none(),
                                 ));
 
                                 if let Some(collider) = collider {
@@ -478,8 +475,13 @@ pub fn spawn_map_entities(
         };
 
         for (mesh, material, collider) in bundles {
-            let mut new_entity =
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
+            let mut new_entity = commands.spawn((
+                CalculateVisleaf,
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                transform,
+                RenderLayers::none(),
+            ));
 
             if let Some(collider) = collider {
                 new_entity.insert((collider, RigidBody::Static));
@@ -825,21 +827,14 @@ impl AssetLoader for BspAssetLoader {
                     })
                     .unwrap_or_default();
 
-                let angles = entity
+                let angles: Angles = entity
                     .data
                     .get("angles")
                     .and_then(|e| e.as_value())
-                    .and_then(|s| {
-                        let mut parts = s.split(' ');
-                        Some(Angles {
-                            pitch: parts.next()?.parse().ok()?,
-                            yaw: parts.next()?.parse().ok()?,
-                            roll: parts.next()?.parse().ok()?,
-                        })
-                    })
+                    .and_then(|s| s.parse().ok())
                     .unwrap_or_default();
 
-                let mut transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
                     * Transform::from_translation(origin).with_rotation(angles.as_quaternion());
                 match entity.class.as_str() {
                     "info_player_terrorist" => {

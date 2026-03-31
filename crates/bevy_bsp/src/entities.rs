@@ -425,7 +425,7 @@ pub fn spawn_worldspawn(
                             Visibility::Visible,
                             Transform::default(),
                             RenderLayers::none(),
-                            ChildOf(cur.entity),
+                            ChildOf(root_ent),
                             VisTreeElementOf { root: root_ent },
                         )).id();
 
@@ -482,7 +482,7 @@ pub fn spawn_worldspawn(
                         });
 
                         for (face_idx, _) in leaf.faces_with_id() {
-                            if !model_face_range.contains( &face_idx) {
+                            if !model_face_range.contains(&face_idx) {
                                 let missing_face = bsp_asset.bsp.face(face_idx as _);
                                 error!(
                                     "Face {face_idx} found in model vistree that isn't in model range {model_face_range:?}: {missing_face:#?}"
@@ -513,6 +513,7 @@ pub fn spawn_worldspawn(
         let plane = cur.handle.plane();
 
         let normal = plane.normal();
+        // Halfspace calculation is done with `- dist` in Source, but `+ dist` in Bevy.
         let dist = -plane.dist;
 
         commands.entity(cur.entity).insert(VisChildren {

@@ -18,18 +18,21 @@ use bevy::{
     camera::visibility::RenderLayers,
     core_pipeline::Skybox,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
-    math::primitives,
-    platform::collections::{HashMap, hash_map::Entry},
+    math::{Affine3A, primitives},
+    pbr::Lightmap,
+    platform::collections::HashMap,
     prelude::*,
     render::render_resource::{
         AstcBlock, AstcChannel, Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor,
         TextureViewDimension,
     },
+    utils::Parallel,
 };
+use dashmap::DashMap;
 use entities::spawn_bsp_model;
-use glam::Affine3A;
-use image::{Rgba32FImage, imageops::FilterType};
+use image::{DynamicImage, Rgb32FImage, Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
+use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 
@@ -66,15 +69,6 @@ pub const SOURCE_TO_BEVY: Affine3A = Affine3A {
     },
     translation: Vec3A::ZERO,
 };
-
-fn angles_to_bevy(angles: &Angles) -> Quat {
-    Quat::from_euler(
-        EulerRot::YXZ,
-        angles.yaw.to_radians(),
-        -angles.pitch.to_radians(),
-        angles.roll.to_radians(),
-    )
-}
 
 impl Plugin for BspLoaderPlugin {
     fn build(&self, app: &mut App) {
@@ -267,11 +261,16 @@ pub fn spawn_map_entities(
 
     info!("Loaded BSP models: {}", bsp.models().count());
 
-    let mut processed_models: HashMap<
+    let processed_models: DashMap<
         // Optional static prop ID (for when a mesh has baked vertex lighting) + prop name
         (Option<usize>, String),
-        Vec<(Handle<Mesh>, Handle<StandardMaterial>, Option<Collider>)>,
-    > = HashMap::new();
+        Vec<(
+            Handle<Mesh>,
+            Handle<StandardMaterial>,
+            Option<Lightmap>,
+            Option<Collider>,
+        )>,
+    > = DashMap::new();
 
     for raw_entity in &bsp.entities {
         let entity: GenericEntity = raw_entity.parse().unwrap();
@@ -317,8 +316,10 @@ pub fn spawn_map_entities(
                         .and_then(|s| s.parse().ok())
                         .unwrap_or_default();
 
+                    let angles = angles.as_quaternion();
+                    let quat = Quat::from_xyzw(angles.x, angles.y, angles.z, angles.w);
                     let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
-                        * Transform::from_translation(origin).with_rotation(angles.as_quaternion());
+                        * Transform::from_translation(origin).with_rotation(quat);
 
                     if let Some(model) = model.as_value() {
                         if model.starts_with("*") {
@@ -334,30 +335,35 @@ pub fn spawn_map_entities(
                                 transform,
                             );
                         } else {
+                            let occupied_ref;
+                            let vacant_ref;
                             let bundles = match processed_models
                                 .entry((None, model.deref().to_owned()))
                             {
-                                Entry::Occupied(occupied_entry) => {
-                                    occupied_entry.into_mut().iter().cloned()
+                                dashmap::Entry::Occupied(occupied_entry) => {
+                                    occupied_ref = occupied_entry.into_ref();
+                                    occupied_ref.iter().cloned()
                                 }
-                                Entry::Vacant(vacant_entry) => {
+                                dashmap::Entry::Vacant(vacant_entry) => {
                                     let Some(model) = bsp_asset.models.get(&vacant_entry.key().1)
                                     else {
                                         continue;
                                     };
                                     let bundles = spawn_mdl_model(&bsp_asset, model)
                                         .map(|(mdl, mat)| {
-                                            let collider = Collider::trimesh_from_mesh(&mdl);
+                                            let collider =
+                                                Collider::convex_decomposition_from_mesh(&mdl);
                                             let mdl = meshes.add(mdl);
-                                            (mdl, mat, collider)
+                                            (mdl, mat, None, collider)
                                         })
                                         .collect::<Vec<_>>();
 
-                                    vacant_entry.insert(bundles).iter().cloned()
+                                    vacant_ref = vacant_entry.insert(bundles);
+                                    vacant_ref.iter().cloned()
                                 }
                             };
 
-                            for (mesh, material, collider) in bundles {
+                            for (mesh, material, lightmap, collider) in bundles {
                                 let mut new_entity = commands.spawn((
                                     CalculateVisleaf,
                                     Mesh3d(mesh),
@@ -368,6 +374,10 @@ pub fn spawn_map_entities(
 
                                 if let Some(collider) = collider {
                                     new_entity.insert((collider, RigidBody::Static));
+                                }
+
+                                if let Some(lightmap) = lightmap {
+                                    new_entity.insert(lightmap);
                                 }
                             }
                         }
@@ -396,96 +406,221 @@ pub fn spawn_map_entities(
         ));
     }
 
-    for (i, static_prop) in bsp.static_props().enumerate() {
-        if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
-            continue;
-        }
+    let mut images_to_create = Parallel::<Vec<(Handle<Image>, Image)>>::default();
+    let mut meshes_to_create = Parallel::<Vec<(Handle<Mesh>, Mesh)>>::default();
 
-        let name = bsp.static_props.dict.name[static_prop.prop_type as usize]
-            .as_str()
-            .to_ascii_lowercase();
+    let mut entities_to_create = Parallel::<
+        Vec<(
+            (
+                CalculateVisleaf,
+                Mesh3d,
+                MeshMaterial3d<StandardMaterial>,
+                Transform,
+                RenderLayers,
+            ),
+            Option<(Collider, RigidBody)>,
+            Option<Lightmap>,
+        )>,
+    >::default();
 
-        let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
-            * Transform::from_translation(static_prop.origin)
-                .with_rotation(static_prop.angles.as_quaternion());
+    bsp.static_props().enumerate().par_bridge().for_each_init(
+        || {
+            (
+                entities_to_create.borrow_local_mut(),
+                meshes_to_create.borrow_local_mut(),
+                images_to_create.borrow_local_mut(),
+            )
+        },
+        |(entities_to_create, meshes_to_create, images_to_create), (i, static_prop)| {
+            if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
+                return;
+            }
 
-        let vhv;
-        let mut vertex_lighting = None;
+            let name = bsp.static_props.dict.name[static_prop.prop_type as usize]
+                .as_str()
+                .to_ascii_lowercase();
 
-        let vertex_light_disabled = static_prop
-            .flags
-            .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
-        let static_prop_id_key = if !vertex_light_disabled
-            && let Some(bytes) = bsp
-                .pack
-                .get(&format!("sp_hdr_{i}.vhv"))
-                .unwrap()
-                .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
-        {
-            vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
+            let quat = static_prop.angles.as_quaternion();
+            let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
+            let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                * Transform::from_translation(Vec3::new(
+                    static_prop.origin.x,
+                    static_prop.origin.y,
+                    static_prop.origin.z,
+                ))
+                .with_rotation(quat);
 
-            vertex_lighting = Some(
-                &vhv.meshes
+            let vhv;
+            let mut vertex_lighting = None;
+            let mut static_prop_id_key = None;
+
+            let vertex_light_disabled = static_prop
+                .flags
+                .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
+
+            if !vertex_light_disabled
+                && let Some(bytes) = bsp
+                    .pack
+                    .get(&format!("sp_hdr_{i}.vhv"))
+                    .unwrap()
+                    .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
+            {
+                vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
+
+                vertex_lighting = Some(
+                    &vhv.meshes
+                        .iter()
+                        .min_by_key(|mesh| mesh.header.lod)
+                        .unwrap()
+                        .vertices,
+                );
+
+                static_prop_id_key = Some(i);
+            }
+
+            let ppl;
+            let mut lightmap = None;
+
+            let lightmap_disabled = static_prop
+                .flags
+                .contains(StaticPropLumpFlags::NO_PER_TEXEL_LIGHTING);
+
+            if !lightmap_disabled
+                && let Some(bytes) = bsp.pack.get(&format!("texelslighting_{i}.ppl")).unwrap()
+            {
+                // TODO: Not sure why the texel color seems to be at a different scale to both
+                // regular lightmaps and vertex colors, but we just scale it for now.
+                const TEXEL_COLOR_SCALE: f32 = 128.;
+
+                ppl = vtf::ppl::Ppl::read(&bytes).unwrap();
+
+                let image = &ppl
+                    .meshes
                     .iter()
                     .min_by_key(|mesh| mesh.header.lod)
                     .unwrap()
-                    .vertices,
-            );
+                    .data;
+                let dynamic_image = DynamicImage::ImageRgb32F(
+                    Rgb32FImage::from_vec(
+                        image.width(),
+                        image.height(),
+                        image
+                            .as_raw()
+                            .iter()
+                            .copied()
+                            .map(|i| (i as f32 / u8::MAX as f32) * TEXEL_COLOR_SCALE)
+                            .collect(),
+                    )
+                    .unwrap(),
+                );
 
-            Some(i)
-        } else {
-            None
-        };
+                let image =
+                    Image::from_dynamic(dynamic_image, false, RenderAssetUsages::RENDER_WORLD);
+                let handle = images.reserve_handle();
+                images_to_create.push((handle.clone(), image));
 
-        let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
-            Entry::Occupied(occupied_entry) => occupied_entry.into_mut().iter().cloned(),
-            Entry::Vacant(vacant_entry) => {
-                // TODO: Not sure why the vertex color seems to be at a different scale to the
-                // lightmaps, but we just scale it for now.
-                const VERTEX_COLOR_SCALE: f32 = 64.;
+                vertex_lighting = None;
+                lightmap = Some(handle);
 
-                let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
-                    continue;
+                static_prop_id_key = Some(i);
+            }
+
+            let occupied_ref;
+            let vacant_ref;
+            let bundles =
+                match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
+                    dashmap::Entry::Occupied(occupied_entry) => {
+                        occupied_ref = occupied_entry.into_ref();
+                        occupied_ref.iter().cloned()
+                    }
+                    dashmap::Entry::Vacant(vacant_entry) => {
+                        // TODO: Not sure why the vertex color seems to be at a different scale to the
+                        // lightmaps, but we just scale it for now.
+                        const VERTEX_COLOR_SCALE: f32 = 64.;
+
+                        let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
+                            return;
+                        };
+
+                        let bundles = spawn_mdl_model(&bsp_asset, model)
+                            .map(|(mut mdl, mat)| {
+                                if let Some(vertex_lighting) = vertex_lighting {
+                                    let colors = vertex_lighting
+                                        .iter()
+                                        .map(|color| {
+                                            let [r, g, b] =
+                                                color.to_rgb32f().map(|v| v / VERTEX_COLOR_SCALE);
+                                            [r, g, b, 1.]
+                                        })
+                                        .chain(std::iter::repeat([1., 1., 1., 1.]))
+                                        .take(mdl.count_vertices())
+                                        .collect::<Vec<_>>();
+
+                                    mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                                }
+
+                                let lightmap_component = if let Some(lightmap) = &lightmap {
+                                    mdl.insert_attribute(
+                                        Mesh::ATTRIBUTE_UV_1,
+                                        mdl.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().to_owned(),
+                                    );
+
+                                    Some(Lightmap {
+                                        image: lightmap.clone(),
+                                        ..Default::default()
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let collider = Collider::convex_decomposition_from_mesh(&mdl);
+                                let handle = meshes.reserve_handle();
+                                meshes_to_create.push((handle.clone(), mdl));
+
+                                (handle, mat, lightmap_component, collider)
+                            })
+                            .collect::<Vec<_>>();
+
+                        vacant_ref = vacant_entry.insert(bundles);
+                        vacant_ref.iter().cloned()
+                    }
                 };
-                let bundles = spawn_mdl_model(&bsp_asset, model)
-                    .map(|(mut mdl, mat)| {
-                        if let Some(vertex_lighting) = vertex_lighting {
-                            let colors = vertex_lighting
-                                .iter()
-                                .map(|color| {
-                                    let [r, g, b] =
-                                        color.to_rgb32f().map(|v| v / VERTEX_COLOR_SCALE);
-                                    [r, g, b, 1.]
-                                })
-                                .chain(std::iter::repeat([1., 1., 1., 1.]))
-                                .take(mdl.count_vertices())
-                                .collect::<Vec<_>>();
 
-                            mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                        }
-
-                        let collider = Collider::trimesh_from_mesh(&mdl);
-                        let mdl = meshes.add(mdl);
-                        (mdl, mat, collider)
-                    })
-                    .collect::<Vec<_>>();
-
-                vacant_entry.insert(bundles).iter().cloned()
-            }
-        };
-
-        for (mesh, material, collider) in bundles {
-            let mut new_entity = commands.spawn((
-                CalculateVisleaf,
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
-                transform,
-                RenderLayers::none(),
+            entities_to_create.par_extend(bundles.par_bridge().map(
+                |(mesh, material, lightmap, collider)| {
+                    (
+                        (
+                            CalculateVisleaf,
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material),
+                            transform,
+                            RenderLayers::none(),
+                        ),
+                        collider.map(|collider| (collider, RigidBody::Static)),
+                        lightmap,
+                    )
+                },
             ));
+        },
+    );
 
-            if let Some(collider) = collider {
-                new_entity.insert((collider, RigidBody::Static));
-            }
+    for (handle, image) in images_to_create.iter_mut().flat_map(|v| v.drain(..)) {
+        images.insert(&handle, image).unwrap();
+    }
+
+    for (handle, mesh) in meshes_to_create.iter_mut().flat_map(|v| v.drain(..)) {
+        meshes.insert(&handle, mesh).unwrap();
+    }
+
+    for (bundle, collider, lightmap) in entities_to_create.iter_mut().flat_map(|v| v.drain(..)) {
+        let mut new_entity = commands.spawn(bundle);
+
+        if let Some(collider) = collider {
+            new_entity.insert(collider);
+        }
+
+        if let Some(lightmap) = lightmap {
+            new_entity.insert(lightmap);
         }
     }
 
@@ -701,7 +836,7 @@ impl AssetLoader for BspAssetLoader {
         };
 
         let default_material = load_context
-            .add_labeled_asset("default".into(), default_material)
+            .add_labeled_asset("default".to_owned(), default_material)
             .into();
 
         for texture in bsp.textures() {
@@ -834,8 +969,10 @@ impl AssetLoader for BspAssetLoader {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_default();
 
+                let quat = angles.as_quaternion();
+                let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
                 let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
-                    * Transform::from_translation(origin).with_rotation(angles.as_quaternion());
+                    * Transform::from_translation(origin).with_rotation(quat);
                 match entity.class.as_str() {
                     "info_player_terrorist" => {
                         t_spawn_points.push(transform);
@@ -843,9 +980,12 @@ impl AssetLoader for BspAssetLoader {
                     "info_player_counterterrorist" => {
                         ct_spawn_points.push(transform);
                     }
-                    "info_player_start" | "info_player_teamspawn" => t_spawn_points.push(transform),
+                    // `info_player_logo` is used in `test_hardware` in CS:S
+                    "info_player_start" | "info_player_teamspawn" | "info_player_logo" => {
+                        t_spawn_points.push(transform)
+                    }
                     _ => {
-                        panic!("unknown class: {}", entity.class);
+                        warn!("unknown class: {}", entity.class);
                     }
                 }
             }
@@ -1021,7 +1161,7 @@ async fn read_vpk_file(
     path: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let base_path = AssetPath::default().with_source("vpk").into_owned();
-    let asset_path = base_path.resolve(path).unwrap();
+    let asset_path = base_path.resolve(path)?;
     if let Ok(data) = load_context.read_asset_bytes(asset_path).await {
         Ok(data)
     } else if let Ok(Some(data)) = bsp.pack.get(path) {

@@ -16,8 +16,10 @@ bevy_vpk.workspace = true
 bevy_n2m.workspace = true
 
 anyhow.workspace = true
+arrayvec.workspace = true
 astcenc-rs.workspace = true
 async-fs.workspace = true
+dashmap.workspace = true
 futures-io.workspace = true
 glam.workspace = true
 image.workspace = true

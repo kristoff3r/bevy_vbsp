@@ -4,10 +4,7 @@ use avian3d::PhysicsPlugins;
 use avian3d::prelude::{Collider, Mass, RigidBody, SpatialQuery, SpatialQueryFilter};
 use bevy::camera::Exposure;
 use bevy::camera::visibility::RenderLayers;
-use bevy::color::palettes::css::WHITE;
 use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
-use bevy::math::bounding::{Aabb3d, BoundingVolume as _};
-use bevy::pbr::wireframe::WireframePlugin;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::AstcBlock;
@@ -18,9 +15,7 @@ use bevy_ahoy::{AhoyPlugins, CharacterController};
 use bevy_bsp::visdata::{CameraRenderMask, DisableVisibility, LockViscluster, VisdataPlugin};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
-use bevy_enhanced_input::prelude::{
-    Axial, Binding, Bindings, Cardinal, DeadZone, InputContextAppExt, Scale,
-};
+use bevy_enhanced_input::prelude::{Axial, Binding, Bindings, Cardinal, DeadZone, Scale};
 use bevy_enhanced_input::{EnhancedInputPlugin, actions, bindings};
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
@@ -216,6 +211,8 @@ fn main() {
         AhoyPlugins::default(),
         VisdataPlugin,
         FpsOverlayPlugin::default(),
+        EguiPlugin::default(),
+        WorldInspectorPlugin::default(),
         // WireframePlugin::default(),
     ))
     .insert_resource(GlobalAmbientLight {

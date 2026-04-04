@@ -17,8 +17,6 @@ use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map
 use bevy_enhanced_input::action::Action;
 use bevy_enhanced_input::prelude::{Axial, Binding, Bindings, Cardinal, DeadZone, Scale};
 use bevy_enhanced_input::{EnhancedInputPlugin, actions, bindings};
-use bevy_inspector_egui::bevy_egui::EguiPlugin;
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
 use clap::builder::PossibleValue;
@@ -211,8 +209,6 @@ fn main() {
         AhoyPlugins::default(),
         VisdataPlugin,
         FpsOverlayPlugin::default(),
-        EguiPlugin::default(),
-        WorldInspectorPlugin::default(),
         // WireframePlugin::default(),
     ))
     .insert_resource(GlobalAmbientLight {

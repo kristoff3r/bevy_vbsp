@@ -32,7 +32,6 @@ use dashmap::DashMap;
 use entities::spawn_bsp_model;
 use image::{DynamicImage, Rgb32FImage, Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
-use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 
@@ -179,7 +178,11 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
 
     #[cfg(feature = "humansize")]
     {
-        println!(
+        info!(
+            "Input lightmap size: {}",
+            humansize::format_size(pixels.len(), humansize::DECIMAL),
+        );
+        info!(
             "ASTC lightmap size: {}",
             humansize::format_size(astc_bytes.len(), humansize::DECIMAL),
         );
@@ -187,7 +190,8 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
 
     #[cfg(not(feature = "humansize"))]
     {
-        println!("ASTC lightmap size: {}b", astc_bytes.len(),);
+        info!("Input lightmap size: {}b", pixels.len());
+        info!("ASTC lightmap size: {}b", astc_bytes.len(),);
     }
 
     Image::new(
@@ -406,221 +410,181 @@ pub fn spawn_map_entities(
         ));
     }
 
-    let mut images_to_create = Parallel::<Vec<(Handle<Image>, Image)>>::default();
-    let mut meshes_to_create = Parallel::<Vec<(Handle<Mesh>, Mesh)>>::default();
+    for (i, static_prop) in bsp.static_props().enumerate() {
+        if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
+            return;
+        }
 
-    let mut entities_to_create = Parallel::<
-        Vec<(
-            (
-                CalculateVisleaf,
-                Mesh3d,
-                MeshMaterial3d<StandardMaterial>,
-                Transform,
-                RenderLayers,
-            ),
-            Option<(Collider, RigidBody)>,
-            Option<Lightmap>,
-        )>,
-    >::default();
+        let name = bsp.static_props.dict.name[static_prop.prop_type as usize]
+            .as_str()
+            .to_ascii_lowercase();
 
-    bsp.static_props().enumerate().par_bridge().for_each_init(
-        || {
-            (
-                entities_to_create.borrow_local_mut(),
-                meshes_to_create.borrow_local_mut(),
-                images_to_create.borrow_local_mut(),
-            )
-        },
-        |(entities_to_create, meshes_to_create, images_to_create), (i, static_prop)| {
-            if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
-                return;
-            }
+        let quat = static_prop.angles.as_quaternion();
+        let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
+        let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+            * Transform::from_translation(Vec3::new(
+                static_prop.origin.x,
+                static_prop.origin.y,
+                static_prop.origin.z,
+            ))
+            .with_rotation(quat);
 
-            let name = bsp.static_props.dict.name[static_prop.prop_type as usize]
-                .as_str()
-                .to_ascii_lowercase();
+        let vhv;
+        let mut vertex_lighting = None;
+        let mut static_prop_id_key = None;
 
-            let quat = static_prop.angles.as_quaternion();
-            let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
-            let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
-                * Transform::from_translation(Vec3::new(
-                    static_prop.origin.x,
-                    static_prop.origin.y,
-                    static_prop.origin.z,
-                ))
-                .with_rotation(quat);
+        let vertex_light_disabled = static_prop
+            .flags
+            .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
 
-            let vhv;
-            let mut vertex_lighting = None;
-            let mut static_prop_id_key = None;
+        if !vertex_light_disabled
+            && let Some(bytes) = bsp
+                .pack
+                .get(&format!("sp_hdr_{i}.vhv"))
+                .unwrap()
+                .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
+        {
+            vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
 
-            let vertex_light_disabled = static_prop
-                .flags
-                .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
-
-            if !vertex_light_disabled
-                && let Some(bytes) = bsp
-                    .pack
-                    .get(&format!("sp_hdr_{i}.vhv"))
-                    .unwrap()
-                    .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
-            {
-                vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
-
-                vertex_lighting = Some(
-                    &vhv.meshes
-                        .iter()
-                        .min_by_key(|mesh| mesh.header.lod)
-                        .unwrap()
-                        .vertices,
-                );
-
-                static_prop_id_key = Some(i);
-            }
-
-            let ppl;
-            let mut lightmap = None;
-
-            let lightmap_disabled = static_prop
-                .flags
-                .contains(StaticPropLumpFlags::NO_PER_TEXEL_LIGHTING);
-
-            if !lightmap_disabled
-                && let Some(bytes) = bsp.pack.get(&format!("texelslighting_{i}.ppl")).unwrap()
-            {
-                // TODO: Not sure why the texel color seems to be at a different scale to both
-                // regular lightmaps and vertex colors, but we just scale it for now.
-                const TEXEL_COLOR_SCALE: f32 = 128.;
-
-                ppl = vtf::ppl::Ppl::read(&bytes).unwrap();
-
-                let image = &ppl
-                    .meshes
+            vertex_lighting = Some(
+                &vhv.meshes
                     .iter()
                     .min_by_key(|mesh| mesh.header.lod)
                     .unwrap()
-                    .data;
-                let dynamic_image = DynamicImage::ImageRgb32F(
-                    Rgb32FImage::from_vec(
-                        image.width(),
-                        image.height(),
-                        image
-                            .as_raw()
-                            .iter()
-                            .copied()
-                            .map(|i| (i as f32 / u8::MAX as f32) * TEXEL_COLOR_SCALE)
-                            .collect(),
-                    )
-                    .unwrap(),
-                );
+                    .vertices,
+            );
 
-                let image =
-                    Image::from_dynamic(dynamic_image, false, RenderAssetUsages::RENDER_WORLD);
-                let handle = images.reserve_handle();
-                images_to_create.push((handle.clone(), image));
-
-                vertex_lighting = None;
-                lightmap = Some(handle);
-
-                static_prop_id_key = Some(i);
-            }
-
-            let occupied_ref;
-            let vacant_ref;
-            let bundles =
-                match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
-                    dashmap::Entry::Occupied(occupied_entry) => {
-                        occupied_ref = occupied_entry.into_ref();
-                        occupied_ref.iter().cloned()
-                    }
-                    dashmap::Entry::Vacant(vacant_entry) => {
-                        // TODO: Not sure why the vertex color seems to be at a different scale to the
-                        // lightmaps, but we just scale it for now.
-                        const VERTEX_COLOR_SCALE: f32 = 64.;
-
-                        let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
-                            return;
-                        };
-
-                        let bundles = spawn_mdl_model(&bsp_asset, model)
-                            .map(|(mut mdl, mat)| {
-                                if let Some(vertex_lighting) = vertex_lighting {
-                                    let colors = vertex_lighting
-                                        .iter()
-                                        .map(|color| {
-                                            let [r, g, b] =
-                                                color.to_rgb32f().map(|v| v / VERTEX_COLOR_SCALE);
-                                            [r, g, b, 1.]
-                                        })
-                                        .chain(std::iter::repeat([1., 1., 1., 1.]))
-                                        .take(mdl.count_vertices())
-                                        .collect::<Vec<_>>();
-
-                                    mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                                }
-
-                                let lightmap_component = if let Some(lightmap) = &lightmap {
-                                    mdl.insert_attribute(
-                                        Mesh::ATTRIBUTE_UV_1,
-                                        mdl.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().to_owned(),
-                                    );
-
-                                    Some(Lightmap {
-                                        image: lightmap.clone(),
-                                        ..Default::default()
-                                    })
-                                } else {
-                                    None
-                                };
-
-                                let collider = Collider::convex_decomposition_from_mesh(&mdl);
-                                let handle = meshes.reserve_handle();
-                                meshes_to_create.push((handle.clone(), mdl));
-
-                                (handle, mat, lightmap_component, collider)
-                            })
-                            .collect::<Vec<_>>();
-
-                        vacant_ref = vacant_entry.insert(bundles);
-                        vacant_ref.iter().cloned()
-                    }
-                };
-
-            entities_to_create.par_extend(bundles.par_bridge().map(
-                |(mesh, material, lightmap, collider)| {
-                    (
-                        (
-                            CalculateVisleaf,
-                            Mesh3d(mesh),
-                            MeshMaterial3d(material),
-                            transform,
-                            RenderLayers::none(),
-                        ),
-                        collider.map(|collider| (collider, RigidBody::Static)),
-                        lightmap,
-                    )
-                },
-            ));
-        },
-    );
-
-    for (handle, image) in images_to_create.iter_mut().flat_map(|v| v.drain(..)) {
-        images.insert(&handle, image).unwrap();
-    }
-
-    for (handle, mesh) in meshes_to_create.iter_mut().flat_map(|v| v.drain(..)) {
-        meshes.insert(&handle, mesh).unwrap();
-    }
-
-    for (bundle, collider, lightmap) in entities_to_create.iter_mut().flat_map(|v| v.drain(..)) {
-        let mut new_entity = commands.spawn(bundle);
-
-        if let Some(collider) = collider {
-            new_entity.insert(collider);
+            static_prop_id_key = Some(i);
         }
 
-        if let Some(lightmap) = lightmap {
-            new_entity.insert(lightmap);
+        let ppl;
+        let mut lightmap = None;
+
+        let lightmap_disabled = static_prop
+            .flags
+            .contains(StaticPropLumpFlags::NO_PER_TEXEL_LIGHTING);
+
+        if !lightmap_disabled
+            && let Some(bytes) = bsp.pack.get(&format!("texelslighting_{i}.ppl")).unwrap()
+        {
+            // TODO: Not sure why the texel color seems to be at a different scale to both
+            // regular lightmaps and vertex colors, but we just scale it for now.
+            const TEXEL_COLOR_SCALE: f32 = 128.;
+
+            ppl = vtf::ppl::Ppl::read(&bytes).unwrap();
+
+            let image = &ppl
+                .meshes
+                .iter()
+                .min_by_key(|mesh| mesh.header.lod)
+                .unwrap()
+                .data;
+            let image = Rgba32FImage::from_vec(
+                image.width(),
+                image.height(),
+                image
+                    .as_raw()
+                    .chunks_exact(3)
+                    .flat_map(|rgb| {
+                        let rgb: &[u8; 3] = rgb.try_into().unwrap();
+                        let [r, g, b] =
+                            rgb.map(|i| (i as f32 / u8::MAX as f32) * TEXEL_COLOR_SCALE);
+
+                        [r, g, b, 1.]
+                    })
+                    .collect(),
+            )
+            .unwrap();
+
+            let gpu_image = if let Some(block_size) = lightmap_settings.astc_block_size {
+                astc_convert(&image, block_size)
+            } else {
+                Image::from_dynamic(image.into(), true, RenderAssetUsages::RENDER_WORLD)
+            };
+
+            let handle = images.add(gpu_image);
+
+            vertex_lighting = None;
+            lightmap = Some(handle);
+
+            static_prop_id_key = Some(i);
+        }
+
+        let occupied_ref;
+        let vacant_ref;
+        let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
+            dashmap::Entry::Occupied(occupied_entry) => {
+                occupied_ref = occupied_entry.into_ref();
+                occupied_ref.iter().cloned()
+            }
+            dashmap::Entry::Vacant(vacant_entry) => {
+                // TODO: Not sure why the vertex color seems to be at a different scale to the
+                // lightmaps, but we just scale it for now.
+                const VERTEX_COLOR_SCALE: f32 = 64.;
+
+                let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
+                    return;
+                };
+
+                let bundles = spawn_mdl_model(&bsp_asset, model)
+                    .map(|(mut mdl, mat)| {
+                        if let Some(vertex_lighting) = vertex_lighting {
+                            let colors = vertex_lighting
+                                .iter()
+                                .map(|color| {
+                                    let [r, g, b] =
+                                        color.to_rgb32f().map(|v| v / VERTEX_COLOR_SCALE);
+                                    [r, g, b, 1.]
+                                })
+                                .chain(std::iter::repeat([1., 1., 1., 1.]))
+                                .take(mdl.count_vertices())
+                                .collect::<Vec<_>>();
+
+                            mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+
+                        let lightmap_component = if let Some(lightmap) = &lightmap {
+                            mdl.insert_attribute(
+                                Mesh::ATTRIBUTE_UV_1,
+                                mdl.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().to_owned(),
+                            );
+
+                            Some(Lightmap {
+                                image: lightmap.clone(),
+                                ..Default::default()
+                            })
+                        } else {
+                            None
+                        };
+
+                        let collider = Collider::convex_decomposition_from_mesh(&mdl);
+                        let handle = meshes.add(mdl);
+
+                        (handle, mat, lightmap_component, collider)
+                    })
+                    .collect::<Vec<_>>();
+
+                vacant_ref = vacant_entry.insert(bundles);
+                vacant_ref.iter().cloned()
+            }
+        };
+
+        for (mesh, material, lightmap, collider) in bundles {
+            let mut new_entity = commands.spawn((
+                CalculateVisleaf,
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                transform,
+                RenderLayers::none(),
+            ));
+
+            if let Some(collider) = collider {
+                new_entity.insert((collider, RigidBody::Static));
+            }
+
+            if let Some(lightmap) = lightmap {
+                new_entity.insert(lightmap);
+            }
         }
     }
 

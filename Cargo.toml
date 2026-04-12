@@ -23,7 +23,7 @@ vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
 vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
 vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
 vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
-vtf = "0.3"
+vtf = { git = "https://github.com/eira-fransham/vtf-rs.git" }
 
 anyhow = "1.0"
 astcenc-rs = "0.2"
@@ -47,30 +47,18 @@ tracing = "0.1"
 # [patch."https://github.com/eira-fransham/vpk-rs.git"]
 # vpk = { path = "../vpk-rs" }
 
-[patch."https://github.com/eira-fransham/vmdl.git"]
-vmdl = { path = "../vmdl" }
+# [patch."https://github.com/eira-fransham/vmdl.git"]
+# vmdl = { path = "../vmdl" }
 
 # [patch."https://github.com/eira-fransham/vbsp.git"]
 # vbsp = { path = "../vbsp" }
 
-[patch.crates-io]
-vtf = { path = "../vtf-rs" }
+# [patch.crates-io]
+# vtf = { path = "../vtf-rs" }
 
 # TODO: Some internals need to be exposed, so we have a vendored fork
 [patch."https://codeberg.org/icewind/vmt-parser.git"]
 vmt-parser = { path = "crates/vmt-parser" }
-
-[profile.dev]
-opt-level = 1
-
-[profile.dev.package.bevy]
-opt-level = 3
-
-[profile.dev.package.avian3d]
-opt-level = 3
-
-[profile.dev.package.glam]
-opt-level = 3
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]
@@ -148,3 +136,8 @@ codegen-units = 1
 # bevy_window = { path = "../bevy/crates/bevy_window" }
 # bevy_winit = { path = "../bevy/crates/bevy_winit" }
 
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

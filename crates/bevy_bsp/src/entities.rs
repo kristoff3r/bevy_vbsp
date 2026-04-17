@@ -36,7 +36,7 @@ pub struct WorldSpawn {
 }
 
 #[derive(Clone)]
-struct BspMesh {
+pub struct BspMesh {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
     indices: Vec<u16>,
@@ -135,7 +135,113 @@ fn mesh_from_face(
     })
 }
 
-pub fn spawn_worldspawn(
+pub trait FaceSpawner: Default {
+    fn orphaned_face_bundle() -> impl Bundle {}
+
+    fn merge_face_mesh(
+        &mut self,
+        parent: Option<Entity>,
+        texture: String,
+        lightmap: Option<Handle<Image>>,
+        mesh: BspMesh,
+    );
+
+    fn finish(
+        self,
+    ) -> (
+        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
+        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
+    );
+}
+
+#[derive(Default)]
+pub struct VisclusterFaceSpawner {
+    parented_faces: HashMap<(Entity, String, Option<Handle<Image>>), BspMesh>,
+    orphaned_faces: Vec<(String, Option<Handle<Image>>, BspMesh)>,
+}
+
+impl FaceSpawner for VisclusterFaceSpawner {
+    fn orphaned_face_bundle() -> impl Bundle {
+        (CalculateVisleaf, RenderLayers::none())
+    }
+
+    fn merge_face_mesh(
+        &mut self,
+        parent: Option<Entity>,
+        texture: String,
+        lightmap: Option<Handle<Image>>,
+        mesh: BspMesh,
+    ) {
+        match parent {
+            Some(parent) => {
+                self.parented_faces
+                    .entry((parent, texture, lightmap))
+                    .and_modify(|existing| existing.merge(&mesh))
+                    .or_insert(mesh);
+            }
+            None => {
+                self.orphaned_faces.push((texture, lightmap, mesh));
+            }
+        }
+    }
+
+    fn finish(
+        self,
+    ) -> (
+        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
+        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
+    ) {
+        let Self {
+            parented_faces,
+            orphaned_faces,
+        } = self;
+
+        (
+            parented_faces
+                .into_iter()
+                .map(|((parent, texture_name, lightmap), mesh)| {
+                    (parent, texture_name, lightmap, mesh)
+                }),
+            orphaned_faces.into_iter(),
+        )
+    }
+}
+
+#[derive(Default)]
+pub struct GlobalFaceSpawner {
+    faces: HashMap<(String, Option<Handle<Image>>), BspMesh>,
+}
+
+impl FaceSpawner for GlobalFaceSpawner {
+    fn merge_face_mesh(
+        &mut self,
+        _: Option<Entity>,
+        texture: String,
+        lightmap: Option<Handle<Image>>,
+        mesh: BspMesh,
+    ) {
+        self.faces
+            .entry((texture, lightmap))
+            .and_modify(|existing| existing.merge(&mesh))
+            .or_insert(mesh);
+    }
+
+    fn finish(
+        self,
+    ) -> (
+        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
+        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
+    ) {
+        (
+            std::iter::empty(),
+            self.faces
+                .into_iter()
+                .map(|((texture_name, lightmap), mesh)| (texture_name, lightmap, mesh)),
+        )
+    }
+}
+
+pub fn spawn_worldspawn<FS: FaceSpawner>(
     commands: &mut Commands,
     bsp_asset: &BspAsset,
     meshes: &mut Assets<Mesh>,
@@ -171,10 +277,7 @@ pub fn spawn_worldspawn(
                 })
                 .unwrap_or_default();
 
-            let Some(mesh) = mesh_from_face(Vec3::ZERO, &face, &lightmap_uv_rect) else {
-                return None;
-            };
-
+            let mesh = mesh_from_face(Vec3::ZERO, &face, &lightmap_uv_rect)?;
             let texture_name = face.texture().name().to_ascii_lowercase();
 
             Some(ConstructedFace {
@@ -334,26 +437,19 @@ pub fn spawn_worldspawn(
 
     let faces_with_parents = faces.into_iter().zip(parents);
 
-    let mut parented_faces = HashMap::<(Entity, String, Option<Handle<Image>>), BspMesh>::new();
-    let mut orphaned_meshes = Vec::<(String, Option<Handle<Image>>, BspMesh)>::new();
+    let mut face_spawner = FS::default();
 
     for (face, parent) in faces_with_parents {
         let Some(face) = face else {
             continue;
         };
 
-        match parent {
-            Some(parent) => {
-                parented_faces
-                    .entry((parent, face.texture_name, face.lightmap))
-                    .and_modify(|existing| existing.merge(&face.mesh))
-                    .or_insert(face.mesh);
-            }
-            None => orphaned_meshes.push((face.texture_name, face.lightmap, face.mesh)),
-        }
+        face_spawner.merge_face_mesh(parent, face.texture_name, face.lightmap, face.mesh);
     }
 
-    for ((parent, texture_name, lightmap), mesh) in parented_faces {
+    let (parented_faces, orphaned_meshes) = face_spawner.finish();
+
+    for (parent, texture_name, lightmap, mesh) in parented_faces {
         let material = bsp_asset
             .materials
             .get(&texture_name)
@@ -408,7 +504,7 @@ pub fn spawn_worldspawn(
         let mesh_handle = meshes.add(mesh);
 
         let mut out = commands.spawn((
-            CalculateVisleaf,
+            FS::orphaned_face_bundle(),
             CollisionMargin(0.01),
             collider,
             RigidBody::Static,
@@ -416,7 +512,6 @@ pub fn spawn_worldspawn(
             MeshMaterial3d(material),
             Wireframe,
             VisTreeElementOf { root: root_ent },
-            RenderLayers::none(),
             ChildOf(root_ent),
         ));
 
@@ -460,7 +555,7 @@ pub fn spawn_worldspawn(
     root_ent
 }
 
-pub fn spawn_bsp_model(
+pub fn spawn_bsp_model<FS: FaceSpawner>(
     commands: &mut Commands,
     bsp_asset: &BspAsset,
     meshes: &mut Assets<Mesh>,
@@ -478,7 +573,7 @@ pub fn spawn_bsp_model(
             continue;
         };
 
-        let lightmap_rect = face_to_lightmap_uv[&(face_idx as u32)];
+        let lightmap_rect = face_to_lightmap_uv[&face_idx];
 
         let min = UVec2::new(lightmap_rect.x, lightmap_rect.y).as_vec2();
         let size = UVec2::new(lightmap_rect.width, lightmap_rect.height).as_vec2();
@@ -535,7 +630,7 @@ pub fn spawn_bsp_model(
             Mesh3d(mesh_handle),
             MeshMaterial3d(material.clone()),
             transform,
-            CalculateVisleaf,
+            FS::orphaned_face_bundle(),
         ));
 
         if let Some(lightmap) = lightmap {

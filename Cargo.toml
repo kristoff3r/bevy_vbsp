@@ -50,8 +50,8 @@ tracing = "0.1"
 # [patch."https://github.com/eira-fransham/vmdl.git"]
 # vmdl = { path = "../vmdl" }
 
-# [patch."https://github.com/eira-fransham/vbsp.git"]
-# vbsp = { path = "../vbsp" }
+[patch."https://github.com/eira-fransham/vbsp.git"]
+vbsp = { path = "../vbsp" }
 
 # [patch.crates-io]
 # vtf = { path = "../vtf-rs" }

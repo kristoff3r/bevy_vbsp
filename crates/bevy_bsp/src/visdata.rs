@@ -1,12 +1,11 @@
 use arrayvec::ArrayVec;
-use bevy::camera::Camera;
 use bevy::camera::primitives::HalfSpace;
 use bevy::camera::visibility::Visibility;
 use bevy::ecs::lifecycle::Insert;
 use bevy::ecs::observer::On;
 use bevy::ecs::system::ParallelCommands;
 use bevy::math::bounding::{Aabb3d, IntersectsVolume};
-use bevy::math::{Affine3A, Mat4, Vec3, Vec3A, prelude::*};
+use bevy::math::{Mat4, Vec3, Vec3A, prelude::*};
 use bevy::transform::TransformPoint;
 use bevy::{
     app::{Last, Plugin, PostUpdate, Startup},
@@ -21,7 +20,7 @@ use bevy::{
         hierarchy::Children,
         query::{Changed, Has, Or, QueryFilter, With, Without},
         schedule::IntoScheduleConfigs as _,
-        system::{Commands, EntityCommand, Local, Query, Single},
+        system::{Commands, EntityCommand, Local, Query},
         world::EntityWorldMut,
     },
     transform::components::GlobalTransform,
@@ -163,116 +162,6 @@ fn in_front(halfspace: HalfSpace, vec: Vec3A) -> bool {
 #[derive(Component, Debug, Copy, Clone)]
 struct DebugTextOverlay;
 
-fn debug_vis_planes(
-    camera: Option<Single<&GlobalTransform, (With<Camera3d>, Without<LockViscluster>)>>,
-    roots: Query<Entity, With<VisTreeElements>>,
-    tree: Query<(&GlobalTransform, &VisChildren)>,
-    debug_visclusters: Query<&DebugViscluster>,
-    mut debug_overlay: Single<&mut Text, With<DebugTextOverlay>>,
-) {
-    struct TreeEnt {
-        entity: Entity,
-        active: bool,
-    }
-
-    let Some(camera) = camera else {
-        return;
-    };
-
-    // let mut rng = SmallRng::seed_from_u64(0);
-
-    for root in roots {
-        let mut nodes = vec![TreeEnt {
-            entity: root,
-            active: true,
-        }];
-
-        while let Some(cur_node) = nodes.pop() {
-            let Ok((
-                node_transform,
-                VisChildren {
-                    front,
-                    back,
-                    midpoint,
-                },
-            )) = tree.get(cur_node.entity)
-            else {
-                // Reached leaf.
-                if cur_node.active {
-                    let debug_viscluster = if let Ok(DebugViscluster(Some(cluster))) =
-                        debug_visclusters.get(cur_node.entity)
-                    {
-                        format!("Viscluster: {cluster}")
-                    } else {
-                        format!("Viscluster: none")
-                    };
-                    debug_overlay.0 = debug_viscluster;
-                }
-
-                continue;
-            };
-
-            // let rotation =
-            //     Quat::look_to_rh(midpoint.normal().into(), midpoint.normal().zxy().into());
-            // let translation =
-            //     node_transform.transform_point((midpoint.normal() * midpoint.d()).into());
-            // let color = Hsva::hsv(rng.random_range(0f32..360f32), 0.8, 1.)
-            //     .with_alpha(if cur_node.active { 0.4 } else { 0.0 });
-
-            // gizmos.grid(
-            //     Isometry3d {
-            //         rotation,
-            //         translation,
-            //     },
-            //     [20, 20].into(),
-            //     Vec2::splat(1.),
-            //     color,
-            // );
-
-            let inverse_transform = node_transform.to_matrix().inverse();
-
-            let in_front = in_front(
-                *midpoint,
-                inverse_transform
-                    .mul_mat4(&camera.to_matrix())
-                    .transform_point3a(Vec3A::ZERO),
-            );
-
-            // let arrow_point = node_transform.transform_point(
-            //     if in_front {
-            //         midpoint.normal() * crate::SCALE.recip()
-            //     } else {
-            //         -midpoint.normal() * crate::SCALE.recip()
-            //     }
-            //     .into(),
-            // );
-
-            // gizmos.arrow(
-            //     translation.into(),
-            //     (translation + arrow_point).into(),
-            //     color,
-            // );
-
-            let (active, inactive) = if in_front {
-                (front, back)
-            } else {
-                (back, front)
-            };
-
-            nodes.extend([
-                TreeEnt {
-                    entity: *active,
-                    active: true,
-                },
-                TreeEnt {
-                    entity: *inactive,
-                    active: false,
-                },
-            ])
-        }
-    }
-}
-
 #[derive(Component)]
 pub struct LockViscluster;
 
@@ -282,19 +171,26 @@ pub struct CalculateVisleaf;
 #[derive(Component)]
 struct VisleafCalculated;
 
-struct PlaneSide {
-    front: bool,
-    back: bool,
-}
+#[cfg(false)]
+mod plane_side {
+    struct PlaneSide {
+        front: bool,
+        back: bool,
+    }
 
-// This can be optimised to only use a single plane, but this implementation means less maths to
-// review.
-fn aabb_plane_side(half_space: &HalfSpace, aabb: &Aabb, world_from_local: &Affine3A) -> PlaneSide {
-    let inverted_half_space = HalfSpace::new(-half_space.normal_d());
+    // This can be optimised to only use a single plane, but this implementation means less maths to
+    // review.
+    fn aabb_plane_side(
+        half_space: &HalfSpace,
+        aabb: &Aabb,
+        world_from_local: &Affine3A,
+    ) -> PlaneSide {
+        let inverted_half_space = HalfSpace::new(-half_space.normal_d());
 
-    PlaneSide {
-        front: !aabb.is_in_half_space(&inverted_half_space, world_from_local),
-        back: !aabb.is_in_half_space(&half_space, world_from_local),
+        PlaneSide {
+            front: !aabb.is_in_half_space(&inverted_half_space, world_from_local),
+            back: !aabb.is_in_half_space(&half_space, world_from_local),
+        }
     }
 }
 
@@ -418,7 +314,7 @@ fn recalculate_visleaf(
 struct InsertIfNotEqual<C>(C);
 
 impl<C: Component + PartialEq> EntityCommand for InsertIfNotEqual<C> {
-    fn apply(self, mut entity: EntityWorldMut) -> () {
+    fn apply(self, mut entity: EntityWorldMut) {
         let existing = entity.get::<C>();
 
         if existing != Some(&self.0) {
@@ -483,6 +379,7 @@ fn remove_camera_leaf_on_disable_visibility(
     commands.entity(event.entity).try_remove::<CameraLeaf>();
 }
 
+#[expect(clippy::too_many_arguments)]
 fn calculate_visible_set(
     mut commands: Commands,
     cameras: Query<
@@ -619,28 +516,4 @@ fn calculate_visible_set(
                 .insert(CameraLeaf { root_to_leaf });
         }
     }
-}
-
-fn make_empty_render_layers_invisible(
-    mut entities: Query<
-        (&mut Visibility, &RenderLayers),
-        (
-            Without<Camera>,
-            With<VisTreeElementOf>,
-            Changed<RenderLayers>,
-        ),
-    >,
-    cameras: Query<&RenderLayers, With<Camera>>,
-) {
-    let all_camera_render_layers = cameras
-        .iter()
-        .fold(RenderLayers::none(), |layers, camera| layers.union(camera));
-
-    entities.par_iter_mut().for_each(|(mut vis, layers)| {
-        if !layers.intersects(&all_camera_render_layers) {
-            *vis = Visibility::Hidden;
-        } else {
-            *vis = Visibility::Inherited;
-        }
-    });
 }

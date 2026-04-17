@@ -15,7 +15,6 @@ use anyhow::bail;
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
     asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader},
-    camera::visibility::RenderLayers,
     core_pipeline::Skybox,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
     math::{Affine3A, primitives},
@@ -26,11 +25,10 @@ use bevy::{
         AstcBlock, AstcChannel, Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor,
         TextureViewDimension,
     },
-    utils::Parallel,
 };
 use dashmap::DashMap;
 use entities::spawn_bsp_model;
-use image::{DynamicImage, Rgb32FImage, Rgba32FImage, imageops::FilterType};
+use image::{Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
 use serde::{Deserialize, Serialize};
 use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
@@ -49,7 +47,7 @@ pub use vmdl;
 pub use vmt_parser;
 pub use vpk;
 
-use crate::visdata::CalculateVisleaf;
+use crate::entities::FaceSpawner;
 
 pub struct BspLoaderPlugin;
 
@@ -224,6 +222,12 @@ pub fn spawn_map_entities(
     mut images: ResMut<Assets<Image>>,
     camera: Option<Single<Entity, With<Camera>>>,
 ) {
+    #[cfg(not(feature = "visdata"))]
+    type FaceSpawner = crate::entities::GlobalFaceSpawner;
+
+    #[cfg(feature = "visdata")]
+    type FaceSpawner = crate::entities::VisclusterFaceSpawner;
+
     let extrusion = if let Some(block_size) = lightmap_settings.astc_block_size
         && let Some(extents) = extents(block_size)
     {
@@ -285,7 +289,7 @@ pub fn spawn_map_entities(
         }
         match class {
             "worldspawn" => {
-                spawn_worldspawn(
+                spawn_worldspawn::<FaceSpawner>(
                     &mut commands,
                     &bsp_asset,
                     &mut meshes,
@@ -329,7 +333,7 @@ pub fn spawn_map_entities(
                         if model.starts_with("*") {
                             let idx: usize = model.deref().split_at(1).1.parse().unwrap();
                             let model = bsp.models().nth(idx).unwrap();
-                            spawn_bsp_model(
+                            spawn_bsp_model::<FaceSpawner>(
                                 &mut commands,
                                 &bsp_asset,
                                 &mut meshes,
@@ -369,11 +373,10 @@ pub fn spawn_map_entities(
 
                             for (mesh, material, lightmap, collider) in bundles {
                                 let mut new_entity = commands.spawn((
-                                    CalculateVisleaf,
                                     Mesh3d(mesh),
                                     MeshMaterial3d(material),
                                     transform,
-                                    RenderLayers::none(),
+                                    FaceSpawner::orphaned_face_bundle(),
                                 ));
 
                                 if let Some(collider) = collider {
@@ -571,11 +574,10 @@ pub fn spawn_map_entities(
 
         for (mesh, material, lightmap, collider) in bundles {
             let mut new_entity = commands.spawn((
-                CalculateVisleaf,
+                FaceSpawner::orphaned_face_bundle(),
                 Mesh3d(mesh),
                 MeshMaterial3d(material),
                 transform,
-                RenderLayers::none(),
             ));
 
             if let Some(collider) = collider {

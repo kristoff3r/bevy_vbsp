@@ -7181,7 +7181,6 @@ dependencies = [
 [[package]]
 name = "vbsp"
 version = "0.9.1"
-source = "git+https://github.com/eira-fransham/vbsp.git?branch=visdata#6bfc0b713a51c3c7a0a96bbeb3ef18b632a386a9"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -7206,7 +7205,6 @@ dependencies = [
 [[package]]
 name = "vbsp-common"
 version = "0.1.0"
-source = "git+https://github.com/eira-fransham/vbsp.git?branch=visdata#6bfc0b713a51c3c7a0a96bbeb3ef18b632a386a9"
 dependencies = [
  "binrw",
  "glam 0.30.10",
@@ -7254,6 +7252,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vmdl"
 version = "0.3.0"
+source = "git+https://github.com/eira-fransham/vmdl.git#4a23c9bfd20588b3bde1cad14cf239f4159f627a"
 dependencies = [
  "arrayvec",
  "bitflags 2.11.0",
@@ -7303,6 +7302,7 @@ dependencies = [
 [[package]]
 name = "vtf"
 version = "0.3.1"
+source = "git+https://github.com/eira-fransham/vtf-rs.git#c050b86fdf7d30a43514a90ed32ce6465232e0ad"
 dependencies = [
  "byteorder",
  "image",

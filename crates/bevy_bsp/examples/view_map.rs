@@ -12,7 +12,7 @@ use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
 use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
-use bevy_bsp::visdata::{CameraRenderMask, DisableVisibility, LockViscluster, VisdataPlugin};
+use bevy_bsp::visdata::{DisableVisibility, LockViscluster, VisdataPlugin};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
 use bevy_enhanced_input::prelude::{Axial, Binding, Bindings, Cardinal, DeadZone, Scale};
@@ -603,7 +603,11 @@ fn setup_walk_player(
             CharacterControllerCameraOf::new(player),
         ));
 
-        camera.insert(CameraRenderMask(1));
+        #[cfg(feature = "visdata")]
+        camera.insert(bevy_bsp::visdata::CameraRenderMask(1));
+
+        // Prevent warnings when `visdata` is disabled
+        let _ = &mut camera;
     } else {
         let mut camera = commands.spawn((
             Camera3d::default(),
@@ -615,7 +619,11 @@ fn setup_walk_player(
             FlyCam,
         ));
 
-        camera.insert(CameraRenderMask(1));
+        #[cfg(feature = "visdata")]
+        camera.insert(bevy_bsp::visdata::CameraRenderMask(1));
+
+        // Prevent warnings when `visdata` is disabled
+        let _ = &mut camera;
     }
 }
 

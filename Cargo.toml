@@ -13,28 +13,32 @@ bevy = "0.18"
 avian3d = "0.6.0"
 bevy_ahoy = { git = "https://github.com/janhohenheim/bevy_ahoy.git" }
 bevy_enhanced_input = "0.24"
+bevy_n2m = { git = "https://codeberg.org/voidentente/bevy_n2m.git" }
 glam = "0.30"
 
 # NOTE: Using fork that removes unnecessary noisy log lines
-vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
-vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
-vtf = "0.3"
+qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
 vbsp = { git = "https://github.com/eira-fransham/vbsp.git" }
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
-qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
+vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
 vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
+vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
+vtf = { git = "https://github.com/eira-fransham/vtf-rs.git" }
 
 anyhow = "1.0"
-async-fs = "2.0"
 astcenc-rs = "0.2"
+arrayvec = "0.7"
+async-fs = "2.0"
 cfg-if = "1.0"
 clap = "4.5"
 futures-io = "0.3"
 image = "0.25"
 itertools = "0.14"
-tracing = "0.1"
 pin-project = "1.0"
+rand = "0.10"
+rayon = "1.11"
 serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
 
 # [patch."https://github.com/eira-fransham/qbsp.git"]
 # qbsp = { path = "../qbsp" }
@@ -48,6 +52,9 @@ serde = { version = "1.0", features = ["derive"] }
 # [patch."https://github.com/eira-fransham/vbsp.git"]
 # vbsp = { path = "../vbsp" }
 
+# [patch.crates-io]
+# vtf = { path = "../vtf-rs" }
+
 # TODO: Some internals need to be exposed, so we have a vendored fork
 [patch."https://codeberg.org/icewind/vmt-parser.git"]
 vmt-parser = { path = "crates/vmt-parser" }
@@ -55,3 +62,16 @@ vmt-parser = { path = "crates/vmt-parser" }
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]
 debug-assertions = false
+
+[profile.bin-release]
+inherits = "release"
+strip = "symbols"
+panic = "abort"
+incremental = false
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

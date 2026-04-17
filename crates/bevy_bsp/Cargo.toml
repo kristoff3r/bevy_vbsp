@@ -8,30 +8,35 @@ workspace = true
 
 [features]
 dev = ["glam/debug-glam-assert", "bevy/debug"]
+visdata = []
 
 [dependencies]
 avian3d.workspace = true
 bevy.workspace = true
 bevy_vpk.workspace = true
+bevy_n2m.workspace = true
 
 anyhow.workspace = true
-async-fs.workspace = true
+arrayvec.workspace = true
 astcenc-rs.workspace = true
+async-fs.workspace = true
 futures-io.workspace = true
+glam.workspace = true
 image.workspace = true
 itertools.workspace = true
-glam.workspace = true
 pin-project.workspace = true
+rand.workspace = true
+rayon.workspace = true
 serde.workspace = true
 tracing.workspace = true
 
-vmdl.workspace = true
+qbsp.workspace = true
 vbsp.workspace = true
 vdf-reader.workspace = true
+vmdl.workspace = true
+vmt-parser.workspace = true
 vpk.workspace = true
 vtf.workspace = true
-vmt-parser.workspace = true
-qbsp.workspace = true
 
 # Debugging
 humansize = { version = "2.1", optional = true }
@@ -39,5 +44,7 @@ humansize = { version = "2.1", optional = true }
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 itertools.workspace = true
+bevy = { workspace = true, features = ["bevy_dev_tools"] }
 bevy_enhanced_input.workspace = true
 bevy_ahoy.workspace = true
+bevy-inspector-egui = "0.36"

@@ -1,4 +1,5 @@
 pub mod entities;
+pub mod visdata;
 
 use core::panic;
 use std::{
@@ -16,7 +17,8 @@ use bevy::{
     asset::{AssetLoader, AssetPath, LoadContext, RenderAssetUsages, io::Reader},
     core_pipeline::Skybox,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
-    math::primitives,
+    math::{Affine3A, primitives},
+    pbr::Lightmap,
     platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
     render::render_resource::{
@@ -33,7 +35,7 @@ use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 use tracing::instrument;
 
-use entities::spawn_mdl_model;
+use entities::{spawn_mdl_model, spawn_worldspawn};
 
 // Re-export everything while we use a lot of git dependencies
 pub use bevy_vpk;
@@ -44,31 +46,25 @@ pub use vmdl;
 pub use vmt_parser;
 pub use vpk;
 
+use crate::entities::FaceSpawner;
+
 pub struct BspLoaderPlugin;
 
-pub const SCALE: f32 = 0.03125;
+pub const SCALE: f32 = 39.37008f32.recip();
 
 #[derive(Resource)]
 pub struct MapAssets {
     pub bsp: Handle<BspAsset>,
 }
 
-pub fn source_to_bevy(v: Vec3) -> Vec3 {
-    Vec3::new(v.y, v.z, v.x) * SCALE
-}
-
-pub fn bevy_to_source(v: Vec3) -> Vec3 {
-    Vec3::new(v.z, v.x, v.y) / SCALE
-}
-
-fn angles_to_bevy(angles: &Angles) -> Quat {
-    Quat::from_euler(
-        EulerRot::YXZ,
-        angles.yaw.to_radians(),
-        angles.pitch.to_radians(),
-        angles.roll.to_radians(),
-    )
-}
+pub const SOURCE_TO_BEVY: Affine3A = Affine3A {
+    matrix3: Mat3A {
+        x_axis: Vec3A::new(0., 0., -SCALE),
+        y_axis: Vec3A::new(-SCALE, 0., 0.),
+        z_axis: Vec3A::new(0., SCALE, 0.),
+    },
+    translation: Vec3A::ZERO,
+};
 
 impl Plugin for BspLoaderPlugin {
     fn build(&self, app: &mut App) {
@@ -179,7 +175,11 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
 
     #[cfg(feature = "humansize")]
     {
-        println!(
+        info!(
+            "Input lightmap size: {}",
+            humansize::format_size(pixels.len(), humansize::DECIMAL),
+        );
+        info!(
             "ASTC lightmap size: {}",
             humansize::format_size(astc_bytes.len(), humansize::DECIMAL),
         );
@@ -187,7 +187,8 @@ fn astc_convert(image: &Rgba32FImage, block_size: AstcBlock) -> Image {
 
     #[cfg(not(feature = "humansize"))]
     {
-        println!("ASTC lightmap size: {}b", astc_bytes.len(),);
+        info!("Input lightmap size: {}b", pixels.len());
+        info!("ASTC lightmap size: {}b", astc_bytes.len(),);
     }
 
     Image::new(
@@ -220,6 +221,12 @@ pub fn spawn_map_entities(
     mut images: ResMut<Assets<Image>>,
     camera: Option<Single<Entity, With<Camera>>>,
 ) {
+    #[cfg(not(feature = "visdata"))]
+    type FaceSpawner = crate::entities::GlobalFaceSpawner;
+
+    #[cfg(feature = "visdata")]
+    type FaceSpawner = crate::entities::VisclusterFaceSpawner;
+
     let extrusion = if let Some(block_size) = lightmap_settings.astc_block_size
         && let Some(extents) = extents(block_size)
     {
@@ -264,8 +271,13 @@ pub fn spawn_map_entities(
     let mut processed_models: HashMap<
         // Optional static prop ID (for when a mesh has baked vertex lighting) + prop name
         (Option<usize>, String),
-        Vec<(Handle<Mesh>, Handle<StandardMaterial>, Option<Collider>)>,
-    > = HashMap::new();
+        Vec<(
+            Handle<Mesh>,
+            Handle<StandardMaterial>,
+            Option<Lightmap>,
+            Option<Collider>,
+        )>,
+    > = Default::default();
 
     for raw_entity in &bsp.entities {
         let entity: GenericEntity = raw_entity.parse().unwrap();
@@ -276,16 +288,13 @@ pub fn spawn_map_entities(
         }
         match class {
             "worldspawn" => {
-                // TODO: `spawn_worldspawn` (which uses the BSP tree to build meshes) seems to be broken,
-                // not all faces appear to be part of the tree.
-                spawn_bsp_model(
+                spawn_worldspawn::<FaceSpawner>(
                     &mut commands,
                     &bsp_asset,
                     &mut meshes,
-                    bsp.models().next().unwrap(),
+                    bsp_asset.bsp.models().next().expect("No worldspawn"),
                     &styles_to_image,
                     &atlas.rects,
-                    Transform::IDENTITY,
                 );
             }
             _ => {
@@ -307,29 +316,23 @@ pub fn spawn_map_entities(
                         })
                         .unwrap_or_default();
 
-                    let angles = entity
+                    let angles: Angles = entity
                         .data
                         .get("angles")
                         .and_then(|e| e.as_value())
-                        .and_then(|s| {
-                            let mut parts = s.split(' ');
-                            Some(Angles {
-                                pitch: parts.next()?.parse().ok()?,
-                                yaw: parts.next()?.parse().ok()?,
-                                roll: parts.next()?.parse().ok()?,
-                            })
-                        })
+                        .and_then(|s| s.parse().ok())
                         .unwrap_or_default();
 
-                    let transform = Transform::from_translation(source_to_bevy(origin))
-                        .with_rotation(angles_to_bevy(&angles));
+                    let angles = angles.as_quaternion();
+                    let quat = Quat::from_xyzw(angles.x, angles.y, angles.z, angles.w);
+                    let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                        * Transform::from_translation(origin).with_rotation(quat);
 
                     if let Some(model) = model.as_value() {
                         if model.starts_with("*") {
                             let idx: usize = model.deref().split_at(1).1.parse().unwrap();
                             let model = bsp.models().nth(idx).unwrap();
-                            // info!("Spawning model for entity {idx} faces={}", model.face_count);
-                            spawn_bsp_model(
+                            spawn_bsp_model::<FaceSpawner>(
                                 &mut commands,
                                 &bsp_asset,
                                 &mut meshes,
@@ -339,11 +342,14 @@ pub fn spawn_map_entities(
                                 transform,
                             );
                         } else {
+                            let occupied_ref;
+                            let vacant_ref;
                             let bundles = match processed_models
                                 .entry((None, model.deref().to_owned()))
                             {
                                 Entry::Occupied(occupied_entry) => {
-                                    occupied_entry.into_mut().iter().cloned()
+                                    occupied_ref = occupied_entry;
+                                    occupied_ref.get().iter().cloned()
                                 }
                                 Entry::Vacant(vacant_entry) => {
                                     let Some(model) = bsp_asset.models.get(&vacant_entry.key().1)
@@ -352,25 +358,32 @@ pub fn spawn_map_entities(
                                     };
                                     let bundles = spawn_mdl_model(&bsp_asset, model)
                                         .map(|(mdl, mat)| {
-                                            let collider = Collider::trimesh_from_mesh(&mdl);
+                                            let collider =
+                                                Collider::convex_decomposition_from_mesh(&mdl);
                                             let mdl = meshes.add(mdl);
-                                            (mdl, mat, collider)
+                                            (mdl, mat, None, collider)
                                         })
                                         .collect::<Vec<_>>();
 
-                                    vacant_entry.insert(bundles).iter().cloned()
+                                    vacant_ref = vacant_entry.insert(bundles);
+                                    vacant_ref.iter().cloned()
                                 }
                             };
 
-                            for (mesh, material, collider) in bundles {
+                            for (mesh, material, lightmap, collider) in bundles {
                                 let mut new_entity = commands.spawn((
                                     Mesh3d(mesh),
                                     MeshMaterial3d(material),
                                     transform,
+                                    FaceSpawner::orphaned_face_bundle(),
                                 ));
 
                                 if let Some(collider) = collider {
                                     new_entity.insert((collider, RigidBody::Static));
+                                }
+
+                                if let Some(lightmap) = lightmap {
+                                    new_entity.insert(lightmap);
                                 }
                             }
                         }
@@ -382,6 +395,10 @@ pub fn spawn_map_entities(
         }
     }
 
+    let spawn_point_mesh = meshes.add(primitives::Cuboid {
+        half_size: Vec3::splat(0.5 * SCALE.recip()),
+    });
+
     for transform in bsp_asset
         .t_spawn_points
         .iter()
@@ -391,14 +408,7 @@ pub fn spawn_map_entities(
             Name::new("Spawn Point"),
             *transform,
             bsp_asset.default_material.clone(),
-            Mesh3d(
-                meshes.add(
-                    primitives::Cuboid {
-                        half_size: Vec3::splat(0.5),
-                    }
-                    .mesh(),
-                ),
-            ),
+            Mesh3d(spawn_point_mesh.clone()),
         ));
     }
 
@@ -411,16 +421,30 @@ pub fn spawn_map_entities(
             .as_str()
             .to_ascii_lowercase();
 
-        let transform = Transform::from_translation(source_to_bevy(static_prop.origin))
-            .with_rotation(angles_to_bevy(&static_prop.angles));
+        let quat = static_prop.angles.as_quaternion();
+        let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
+        let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+            * Transform::from_translation(Vec3::new(
+                static_prop.origin.x,
+                static_prop.origin.y,
+                static_prop.origin.z,
+            ))
+            .with_rotation(quat);
 
         let vhv;
         let mut vertex_lighting = None;
-        let static_prop_id_key = if let Some(bytes) = bsp
-            .pack
-            .get(&format!("sp_hdr_{i}.vhv"))
-            .unwrap()
-            .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
+        let mut static_prop_id_key = None;
+
+        let vertex_light_disabled = static_prop
+            .flags
+            .contains(StaticPropLumpFlags::NO_PER_VERTEX_LIGHTING);
+
+        if !vertex_light_disabled
+            && let Some(bytes) = bsp
+                .pack
+                .get(&format!("sp_hdr_{i}.vhv"))
+                .unwrap()
+                .or_else(|| bsp.pack.get(&format!("sp_{i}.vhv")).unwrap())
         {
             vhv = vmdl::vhv::Vhv::read(&bytes).unwrap();
 
@@ -432,13 +456,69 @@ pub fn spawn_map_entities(
                     .vertices,
             );
 
-            Some(i)
-        } else {
-            None
-        };
+            static_prop_id_key = Some(i);
+        }
 
+        let ppl;
+        let mut lightmap = None;
+
+        let lightmap_disabled = static_prop
+            .flags
+            .contains(StaticPropLumpFlags::NO_PER_TEXEL_LIGHTING);
+
+        if !lightmap_disabled
+            && let Some(bytes) = bsp.pack.get(&format!("texelslighting_{i}.ppl")).unwrap()
+        {
+            // TODO: Not sure why the texel color seems to be at a different scale to both
+            // regular lightmaps and vertex colors, but we just scale it for now.
+            const TEXEL_COLOR_SCALE: f32 = 128.;
+
+            ppl = vtf::ppl::Ppl::read(&bytes).unwrap();
+
+            let image = &ppl
+                .meshes
+                .iter()
+                .min_by_key(|mesh| mesh.header.lod)
+                .unwrap()
+                .data;
+            let image = Rgba32FImage::from_vec(
+                image.width(),
+                image.height(),
+                image
+                    .as_raw()
+                    .chunks_exact(3)
+                    .flat_map(|rgb| {
+                        let rgb: &[u8; 3] = rgb.try_into().unwrap();
+                        let [r, g, b] =
+                            rgb.map(|i| (i as f32 / u8::MAX as f32) * TEXEL_COLOR_SCALE);
+
+                        [r, g, b, 1.]
+                    })
+                    .collect(),
+            )
+            .unwrap();
+
+            let gpu_image = if let Some(block_size) = lightmap_settings.astc_block_size {
+                astc_convert(&image, block_size)
+            } else {
+                Image::from_dynamic(image.into(), true, RenderAssetUsages::RENDER_WORLD)
+            };
+
+            let handle = images.add(gpu_image);
+
+            vertex_lighting = None;
+            lightmap = Some(handle);
+
+            static_prop_id_key = Some(i);
+        }
+
+        let occupied_ref;
+        let vacant_ref;
         let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
-            Entry::Occupied(occupied_entry) => occupied_entry.into_mut().iter().cloned(),
+            Entry::Occupied(occupied_entry) => {
+                occupied_ref = occupied_entry;
+                occupied_ref.get().iter().cloned()
+            }
             Entry::Vacant(vacant_entry) => {
                 // TODO: Not sure why the vertex color seems to be at a different scale to the
                 // lightmaps, but we just scale it for now.
@@ -447,6 +527,7 @@ pub fn spawn_map_entities(
                 let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
                     continue;
                 };
+
                 let bundles = spawn_mdl_model(&bsp_asset, model)
                     .map(|(mut mdl, mat)| {
                         if let Some(vertex_lighting) = vertex_lighting {
@@ -464,22 +545,46 @@ pub fn spawn_map_entities(
                             mdl.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
                         }
 
-                        let collider = Collider::trimesh_from_mesh(&mdl);
-                        let mdl = meshes.add(mdl);
-                        (mdl, mat, collider)
+                        let lightmap_component = if let Some(lightmap) = &lightmap {
+                            mdl.insert_attribute(
+                                Mesh::ATTRIBUTE_UV_1,
+                                mdl.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().to_owned(),
+                            );
+
+                            Some(Lightmap {
+                                image: lightmap.clone(),
+                                ..Default::default()
+                            })
+                        } else {
+                            None
+                        };
+
+                        let collider = Collider::convex_decomposition_from_mesh(&mdl);
+                        let handle = meshes.add(mdl);
+
+                        (handle, mat, lightmap_component, collider)
                     })
                     .collect::<Vec<_>>();
 
-                vacant_entry.insert(bundles).iter().cloned()
+                vacant_ref = vacant_entry.insert(bundles);
+                vacant_ref.iter().cloned()
             }
         };
 
-        for (mesh, material, collider) in bundles {
-            let mut new_entity =
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
+        for (mesh, material, lightmap, collider) in bundles {
+            let mut new_entity = commands.spawn((
+                FaceSpawner::orphaned_face_bundle(),
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                transform,
+            ));
 
             if let Some(collider) = collider {
                 new_entity.insert((collider, RigidBody::Static));
+            }
+
+            if let Some(lightmap) = lightmap {
+                new_entity.insert(lightmap);
             }
         }
     }
@@ -696,7 +801,7 @@ impl AssetLoader for BspAssetLoader {
         };
 
         let default_material = load_context
-            .add_labeled_asset("default".into(), default_material)
+            .add_labeled_asset("default".to_owned(), default_material)
             .into();
 
         for texture in bsp.textures() {
@@ -822,22 +927,17 @@ impl AssetLoader for BspAssetLoader {
                     })
                     .unwrap_or_default();
 
-                let angles = entity
+                let angles: Angles = entity
                     .data
                     .get("angles")
                     .and_then(|e| e.as_value())
-                    .and_then(|s| {
-                        let mut parts = s.split(' ');
-                        Some(Angles {
-                            pitch: parts.next()?.parse().ok()?,
-                            yaw: parts.next()?.parse().ok()?,
-                            roll: parts.next()?.parse().ok()?,
-                        })
-                    })
+                    .and_then(|s| s.parse().ok())
                     .unwrap_or_default();
 
-                let transform = Transform::from_translation(source_to_bevy(origin))
-                    .with_rotation(angles_to_bevy(&angles));
+                let quat = angles.as_quaternion();
+                let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
+                let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                    * Transform::from_translation(origin).with_rotation(quat);
                 match entity.class.as_str() {
                     "info_player_terrorist" => {
                         t_spawn_points.push(transform);
@@ -845,14 +945,18 @@ impl AssetLoader for BspAssetLoader {
                     "info_player_counterterrorist" => {
                         ct_spawn_points.push(transform);
                     }
-                    "info_player_start" | "info_player_teamspawn" => t_spawn_points.push(transform),
+                    // `info_player_logo` is used in `test_hardware` in CS:S
+                    "info_player_start" | "info_player_teamspawn" | "info_player_logo" => {
+                        t_spawn_points.push(transform)
+                    }
                     _ => {
-                        panic!("unknown class: {}", entity.class);
+                        warn!("unknown class: {}", entity.class);
                     }
                 }
             }
         }
 
+        // TODO: Handle the leaf cluster.
         for model in &bsp.static_props.dict.name {
             let model_key = model.as_str().to_ascii_lowercase();
             if models.contains_key(&model_key) {
@@ -938,8 +1042,12 @@ impl AssetLoader for BspAssetLoader {
 fn material_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
     let name = name.as_ref();
     match Path::new(name).extension() {
-        None => Some(format!("materials/{}.vmt", name)),
-        Some(ext) if ext == OsStr::new("vmt") => Some(name.to_owned()),
+        // We need to normalize double-slashes.
+        // TODO: We should just use paths, but we need to handle Windows vs Unix path separators.
+        None => Some(format!("materials/{}.vmt", name).replace("//", "/")),
+        Some(ext) if ext == OsStr::new("vmt") => {
+            Some(format!("materials/{}", name).replace("//", "/"))
+        }
         _ => None,
     }
 }
@@ -947,8 +1055,10 @@ fn material_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
 fn texture_path<P: AsRef<str> + ?Sized>(name: &P) -> Option<String> {
     let name = name.as_ref();
     match Path::new(name).extension() {
-        None => Some(format!("materials/{}.vtf", name)),
-        Some(ext) if ext == OsStr::new("vtf") => Some(name.to_owned()),
+        // We need to normalize double-slashes.
+        // TODO: We should just use paths, but we need to handle Windows vs Unix path separators.
+        None => Some(format!("materials/{}.vtf", name).replace("//", "/")),
+        Some(ext) if ext == OsStr::new("vtf") => Some(format!("materials/{}", name)),
         _ => None,
     }
 }
@@ -1016,7 +1126,7 @@ async fn read_vpk_file(
     path: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let base_path = AssetPath::default().with_source("vpk").into_owned();
-    let asset_path = base_path.resolve(path).unwrap();
+    let asset_path = base_path.resolve(path)?;
     if let Ok(data) = load_context.read_asset_bytes(asset_path).await {
         Ok(data)
     } else if let Ok(Some(data)) = bsp.pack.get(path) {

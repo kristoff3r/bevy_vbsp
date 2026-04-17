@@ -15,7 +15,9 @@ use bevy_ahoy::{AhoyPlugins, CharacterController};
 use bevy_bsp::visdata::{DisableVisibility, LockViscluster, VisdataPlugin};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
-use bevy_enhanced_input::prelude::{Axial, Binding, Bindings, Cardinal, DeadZone, Scale};
+use bevy_enhanced_input::prelude::{
+    Axial, Binding, Bindings, Cardinal, DeadZone, InputContextAppExt, Scale,
+};
 use bevy_enhanced_input::{EnhancedInputPlugin, actions, bindings};
 use bevy_vpk::vpk::{LoadVPKDone, LoadVpks, VpkPlugin};
 
@@ -195,13 +197,7 @@ fn main() {
     // NOTE: VpkPlugin must come before DefaultPlugins due to registering an AssetSource
     app.add_plugins((
         VpkPlugin,
-        DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                present_mode: PresentMode::AutoNoVsync,
-                ..default()
-            }),
-            ..default()
-        }),
+        DefaultPlugins,
         BspLoaderPlugin,
         PlayerPlugin,
         PhysicsPlugins::default(),
@@ -209,8 +205,8 @@ fn main() {
         AhoyPlugins::default(),
         VisdataPlugin,
         FpsOverlayPlugin::default(),
-        // WireframePlugin::default(),
     ))
+    .add_input_context::<PlayerInput>()
     .insert_resource(GlobalAmbientLight {
         color: ClearColor::default().0,
         brightness: 10000.0,
@@ -253,16 +249,6 @@ struct Game {
 const STANDARD_VPKS: [&str; 2] = ["textures", "misc"];
 
 impl Game {
-    const fn hl2(name: &'static str) -> Self {
-        Game {
-            name,
-            asset_dir: "hl2",
-            vpk_prefix: Some("hl2"),
-            vpks: &STANDARD_VPKS,
-            extension: None,
-        }
-    }
-
     const TF2: Game = Game {
         name: "Team Fortress 2",
         asset_dir: "tf",
@@ -286,6 +272,16 @@ impl Game {
         vpks: &["pak01"],
         extension: None,
     };
+
+    const fn hl2(name: &'static str) -> Self {
+        Game {
+            name,
+            asset_dir: "hl2",
+            vpk_prefix: Some("hl2"),
+            vpks: &STANDARD_VPKS,
+            extension: None,
+        }
+    }
 
     fn resolve(&self, vpk: &str) -> String {
         let Self {
@@ -325,7 +321,7 @@ pub enum MapState {
 // Inlined version of bevy_flycam
 use bevy::ecs::message::MessageCursor;
 use bevy::input::mouse::MouseMotion;
-use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 pub mod prelude {
     pub use crate::*;
@@ -533,6 +529,8 @@ fn initial_grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<Primar
 #[derive(Component)]
 struct PlayerInput;
 
+const USE_WALK_PLAYER: bool = false;
+
 /// Spawns the `Camera3dBundle` to be controlled
 fn setup_walk_player(
     mut commands: Commands,
@@ -554,7 +552,7 @@ fn setup_walk_player(
         ..*spawn_point
     };
 
-    if false {
+    if USE_WALK_PLAYER {
         // Spawn the player entity
         let player = commands
             .spawn((

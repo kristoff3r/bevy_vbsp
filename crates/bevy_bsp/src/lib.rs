@@ -19,14 +19,13 @@ use bevy::{
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, TextureFormatPixelInfo},
     math::{Affine3A, primitives},
     pbr::Lightmap,
-    platform::collections::HashMap,
+    platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
     render::render_resource::{
         AstcBlock, AstcChannel, Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor,
         TextureViewDimension,
     },
 };
-use dashmap::DashMap;
 use entities::spawn_bsp_model;
 use image::{Rgba32FImage, imageops::FilterType};
 use qbsp::mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData};
@@ -269,7 +268,7 @@ pub fn spawn_map_entities(
 
     info!("Loaded BSP models: {}", bsp.models().count());
 
-    let processed_models: DashMap<
+    let mut processed_models: HashMap<
         // Optional static prop ID (for when a mesh has baked vertex lighting) + prop name
         (Option<usize>, String),
         Vec<(
@@ -278,7 +277,7 @@ pub fn spawn_map_entities(
             Option<Lightmap>,
             Option<Collider>,
         )>,
-    > = DashMap::new();
+    > = Default::default();
 
     for raw_entity in &bsp.entities {
         let entity: GenericEntity = raw_entity.parse().unwrap();
@@ -348,11 +347,11 @@ pub fn spawn_map_entities(
                             let bundles = match processed_models
                                 .entry((None, model.deref().to_owned()))
                             {
-                                dashmap::Entry::Occupied(occupied_entry) => {
-                                    occupied_ref = occupied_entry.into_ref();
-                                    occupied_ref.iter().cloned()
+                                Entry::Occupied(occupied_entry) => {
+                                    occupied_ref = occupied_entry;
+                                    occupied_ref.get().iter().cloned()
                                 }
-                                dashmap::Entry::Vacant(vacant_entry) => {
+                                Entry::Vacant(vacant_entry) => {
                                     let Some(model) = bsp_asset.models.get(&vacant_entry.key().1)
                                     else {
                                         continue;
@@ -415,7 +414,7 @@ pub fn spawn_map_entities(
 
     for (i, static_prop) in bsp.static_props().enumerate() {
         if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
-            return;
+            continue;
         }
 
         let name = bsp.static_props.dict.name[static_prop.prop_type as usize]
@@ -516,17 +515,17 @@ pub fn spawn_map_entities(
         let occupied_ref;
         let vacant_ref;
         let bundles = match processed_models.entry((static_prop_id_key, name.as_str().to_owned())) {
-            dashmap::Entry::Occupied(occupied_entry) => {
-                occupied_ref = occupied_entry.into_ref();
-                occupied_ref.iter().cloned()
+            Entry::Occupied(occupied_entry) => {
+                occupied_ref = occupied_entry;
+                occupied_ref.get().iter().cloned()
             }
-            dashmap::Entry::Vacant(vacant_entry) => {
+            Entry::Vacant(vacant_entry) => {
                 // TODO: Not sure why the vertex color seems to be at a different scale to the
                 // lightmaps, but we just scale it for now.
                 const VERTEX_COLOR_SCALE: f32 = 64.;
 
                 let Some(model) = bsp_asset.models.get(&vacant_entry.key().1) else {
-                    return;
+                    continue;
                 };
 
                 let bundles = spawn_mdl_model(&bsp_asset, model)

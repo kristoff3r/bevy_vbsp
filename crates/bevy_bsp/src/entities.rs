@@ -12,15 +12,11 @@ use bevy::{
     ecs::entity::EntityHashSet,
     math::{bounding::Aabb3d, prelude::*},
     mesh::{Indices, PrimitiveTopology},
-    pbr::{
-        Lightmap,
-        wireframe::{Wireframe, WireframeColor},
-    },
+    pbr::Lightmap,
     prelude::*,
 };
 use itertools::{Either, Itertools};
 use qbsp::data::LightmapStyle;
-use rand::{RngExt as _, SeedableRng as _, rngs::SmallRng};
 use serde::Deserialize;
 
 use crate::{
@@ -136,6 +132,9 @@ fn mesh_from_face(
 }
 
 pub trait FaceSpawner: Default {
+    // HACK: This should be more configurable
+    const BUILD_NODE_TREE: bool;
+
     fn orphaned_face_bundle() -> impl Bundle {}
 
     fn merge_face_mesh(
@@ -161,6 +160,8 @@ pub struct VisclusterFaceSpawner {
 }
 
 impl FaceSpawner for VisclusterFaceSpawner {
+    const BUILD_NODE_TREE: bool = true;
+
     fn orphaned_face_bundle() -> impl Bundle {
         (CalculateVisleaf, RenderLayers::none())
     }
@@ -213,6 +214,8 @@ pub struct GlobalFaceSpawner {
 }
 
 impl FaceSpawner for GlobalFaceSpawner {
+    const BUILD_NODE_TREE: bool = false;
+
     fn merge_face_mesh(
         &mut self,
         _: Option<Entity>,
@@ -318,7 +321,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
 
     let mut parents = vec![None::<Entity>; faces.len()];
 
-    while let Some(cur) = nodes.pop() {
+    while let Some(cur) = nodes.pop().filter(|_| FS::BUILD_NODE_TREE) {
         let [front, back] = cur
             .handle
             .children()
@@ -459,12 +462,6 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
                 bsp_asset.default_material.0.clone()
             });
 
-        let wireframe_color = Hsva::hsv(
-            SmallRng::seed_from_u64(parent.to_bits()).random_range(0f32..360f32),
-            0.8,
-            1.,
-        );
-
         let collider = mesh.collider();
         let mesh_handle = meshes.add(mesh);
 
@@ -474,10 +471,6 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
             RigidBody::Static,
             Mesh3d(mesh_handle),
             MeshMaterial3d(material),
-            Wireframe,
-            WireframeColor {
-                color: wireframe_color.into(),
-            },
             RenderLayers::none(),
             ChildOf(parent),
         ));
@@ -510,20 +503,9 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
             RigidBody::Static,
             Mesh3d(mesh_handle),
             MeshMaterial3d(material),
-            Wireframe,
             VisTreeElementOf { root: root_ent },
             ChildOf(root_ent),
         ));
-
-        let wireframe_color = Hsva::hsv(
-            SmallRng::seed_from_u64(out.id().to_bits()).random_range(0f32..360f32),
-            0.8,
-            1.,
-        );
-
-        out.insert(WireframeColor {
-            color: wireframe_color.into(),
-        });
 
         if let Some(lightmap) = lightmap {
             out.insert(Lightmap {
@@ -638,7 +620,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
         }
 
         if let Some(collider) = collider {
-            entity.insert((collider, RigidBody::Static, RenderLayers::none()));
+            entity.insert((collider, RigidBody::Static));
         } else {
             warn!("No collider for texture: {}", texture_name);
         }

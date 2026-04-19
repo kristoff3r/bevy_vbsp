@@ -542,7 +542,6 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
     meshes: &mut Assets<Mesh>,
     model: vbsp::Handle<'_, vbsp::Model>,
     styles_to_image: &HashMap<LightmapStyle, (Handle<Image>, UVec2)>,
-    // TODO: Use regular hashmap
     face_to_lightmap_uv: &HashMap<u32, vbsp::Rect>,
     transform: Transform,
 ) {

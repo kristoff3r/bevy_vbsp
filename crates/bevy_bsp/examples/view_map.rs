@@ -12,7 +12,7 @@ use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
 use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
-use bevy_bsp::visdata::{DisableVisibility, LockViscluster, VisdataPlugin};
+use bevy_bsp::visdata::{DisableVisibility, LockViscluster};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
 use bevy_enhanced_input::prelude::{
@@ -203,26 +203,29 @@ fn main() {
         PhysicsPlugins::default(),
         EnhancedInputPlugin,
         AhoyPlugins::default(),
-        VisdataPlugin,
         FpsOverlayPlugin::default(),
-    ))
-    .add_input_context::<PlayerInput>()
-    .insert_resource(GlobalAmbientLight {
-        color: ClearColor::default().0,
-        brightness: 10000.0,
-        affects_lightmapped_meshes: false,
-    })
-    .init_resource::<PhysAssets>()
-    .init_state::<MapState>()
-    .add_systems(Startup, load_vpks)
-    .add_observer(load_map)
-    .add_systems(
-        Update,
-        (
-            check_map_loaded.run_if(in_state(MapState::Loading)),
-            spawn_cube,
-        ),
-    );
+    ));
+
+    #[cfg(feature = "visdata")]
+    app.add_plugins(bevy_bsp::visdata::VisdataPlugin);
+
+    app.add_input_context::<PlayerInput>()
+        .insert_resource(GlobalAmbientLight {
+            color: ClearColor::default().0,
+            brightness: 10000.0,
+            affects_lightmapped_meshes: false,
+        })
+        .init_resource::<PhysAssets>()
+        .init_state::<MapState>()
+        .add_systems(Startup, load_vpks)
+        .add_observer(load_map)
+        .add_systems(
+            Update,
+            (
+                check_map_loaded.run_if(in_state(MapState::Loading)),
+                spawn_cube,
+            ),
+        );
 
     app.run();
 }

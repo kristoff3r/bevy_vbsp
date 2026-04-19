@@ -9,6 +9,7 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     result::Result,
+    str::FromStr,
     sync::Arc,
 };
 
@@ -75,6 +76,16 @@ pub const SOURCE_TO_BEVY: Affine3A = Affine3A {
     translation: Vec3A::ZERO,
 };
 
+pub fn parse_vec3(s: &str) -> Result<Vec3, <f32 as FromStr>::Err> {
+    let mut parts = s.split(' ');
+    Ok([
+        parts.next().unwrap_or_default().parse()?,
+        parts.next().unwrap_or_default().parse()?,
+        parts.next().unwrap_or_default().parse()?,
+    ]
+    .into())
+}
+
 impl Plugin for BspLoaderPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<BspAsset>()
@@ -140,17 +151,7 @@ impl Plugin for BspLoaderPlugin {
                         .data
                         .get("origin")
                         .and_then(|e| e.as_value())
-                        .and_then(|s| {
-                            let mut parts = s.split(' ');
-                            Some(
-                                [
-                                    parts.next()?.parse().ok()?,
-                                    parts.next()?.parse().ok()?,
-                                    parts.next()?.parse().ok()?,
-                                ]
-                                .into(),
-                            )
-                        })
+                        .and_then(|s| parse_vec3(s).ok())
                         .unwrap_or_default();
 
                     let angles: Angles = entity

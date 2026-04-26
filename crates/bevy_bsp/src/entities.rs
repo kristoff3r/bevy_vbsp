@@ -1,7 +1,5 @@
 pub mod info_player;
 
-use std::collections::{HashMap, hash_map::Entry};
-
 use avian3d::prelude::{Collider, CollisionMargin, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
@@ -13,6 +11,7 @@ use bevy::{
     math::{bounding::Aabb3d, prelude::*},
     mesh::{Indices, PrimitiveTopology},
     pbr::Lightmap,
+    platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
 };
 use itertools::{Either, Itertools};

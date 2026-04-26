@@ -9,6 +9,7 @@ workspace = true
 [features]
 dev = ["glam/debug-glam-assert", "bevy/debug"]
 visdata = []
+nightly = []
 
 [dependencies]
 avian3d.workspace = true

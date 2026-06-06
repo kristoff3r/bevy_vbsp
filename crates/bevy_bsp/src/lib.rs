@@ -1,3 +1,5 @@
+pub mod crosshair_pointer;
+pub mod debug;
 pub mod entities;
 pub mod matcher;
 pub mod visdata;
@@ -42,7 +44,7 @@ use vbsp::{Angles, Bsp, GenericEntity, StaticPropLumpFlags};
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 use tracing::instrument;
 
-use entities::{spawn_mdl_model, spawn_worldspawn};
+use entities::{BspEntityModelMesh, BspStaticPropMesh, spawn_mdl_model, spawn_worldspawn};
 
 // Re-export everything while we use a lot of git dependencies
 pub use bevy_vpk;
@@ -170,15 +172,17 @@ impl Plugin for BspLoaderPlugin {
                         // TODO: This redoes work if the same BSP model is used multiple times - does this happen in practice?
                         if model.starts_with("*") {
                             let idx: usize = model.deref().split_at(1).1.parse().unwrap();
-                            let model = bsp_asset.bsp.models().nth(idx).unwrap();
+                            let model_handle = bsp_asset.bsp.models().nth(idx).unwrap();
                             spawn_bsp_model::<DefaultFaceSpawner>(
                                 &mut commands,
                                 bsp_asset,
                                 &mut meshes,
-                                model,
+                                model_handle,
                                 &bsp.styles_to_image,
                                 &bsp.atlas_rects,
                                 transform,
+                                &entity.class,
+                                idx,
                             );
                         } else {
                             let occupied_ref;
@@ -208,6 +212,10 @@ impl Plugin for BspLoaderPlugin {
 
                             for VMdlComponent { mesh, material } in &processed_mdl.components {
                                 commands.spawn((
+                                    BspEntityModelMesh {
+                                        model_path: model.to_string(),
+                                        classname: entity.class.clone(),
+                                    },
                                     Mesh3d(mesh.clone()),
                                     MeshMaterial3d(material.clone()),
                                     transform,
@@ -745,6 +753,10 @@ pub fn spawn_map_entities(
 
         for (mesh, material, lightmap) in bundles {
             let mut new_entity = commands.spawn((
+                BspStaticPropMesh {
+                    model_path: name.clone(),
+                    prop_index: i,
+                },
                 DefaultFaceSpawner::orphaned_face_bundle(),
                 Mesh3d(mesh),
                 MeshMaterial3d(material),
@@ -856,10 +868,25 @@ pub fn spawn_map_entities(
 #[derive(Default, TypePath)]
 pub struct BspAssetLoader;
 
+/// Debug info from a VTF texture header, keyed by texture name in [`BspAsset`].
+#[derive(Debug, Clone)]
+pub struct VtfInfo {
+    pub width: u16,
+    pub height: u16,
+    pub decoded_width: u32,
+    pub decoded_height: u32,
+    pub flags: u32,
+    pub format: String,
+}
+
 #[derive(Asset, TypePath, Clone)]
 pub struct BspAsset {
     pub bsp: Arc<vbsp::Bsp>,
     pub materials: Arc<HashMap<String, Handle<StandardMaterial>>>,
+    /// Parsed VMT material data, keyed by texture name (for debugging).
+    pub vmt_materials: Arc<HashMap<String, vmt_parser::material::Material>>,
+    /// VTF header info, keyed by texture name (for debugging).
+    pub vtf_info: Arc<HashMap<String, VtfInfo>>,
     pub models: Arc<HashMap<String, vmdl::Model>>,
     pub default_material: MeshMaterial3d<StandardMaterial>,
     pub cubemap: Handle<Image>,
@@ -888,6 +915,8 @@ impl AssetLoader for BspAssetLoader {
         let bsp = vbsp::Bsp::read(&bytes)?;
 
         let mut materials = HashMap::new();
+        let mut vmt_materials: HashMap<String, vmt_parser::material::Material> = HashMap::new();
+        let mut vtf_info: HashMap<String, VtfInfo> = HashMap::new();
 
         let default_texture: Handle<Image> = load_context.load("images/UVCheckerMap01-512.png");
         let cubemap: Handle<Image> = load_context.load("images/labeled_skybox.png");
@@ -899,9 +928,18 @@ impl AssetLoader for BspAssetLoader {
             ..default()
         };
 
-        let load_material = async |load_context: &mut LoadContext<'_>, name: &str| {
+        let load_material = async |load_context: &mut LoadContext<'_>,
+                                   name: &str|
+              -> Result<
+            (
+                StandardMaterial,
+                Option<vmt_parser::material::Material>,
+                Option<VtfInfo>,
+            ),
+            anyhow::Error,
+        > {
             let vmt_path = material_path(name);
-            let material = if let Some(vmt_path) = vmt_path {
+            let (material, parsed_vmt, base_vtf_info) = if let Some(vmt_path) = vmt_path {
                 let vmt_data = read_vpk_file(&bsp, load_context, &vmt_path).await?;
                 let vmt = String::from_utf8(vmt_data).expect("bad vmt utf8");
                 let Ok(mut vmt) = vmt_parser::from_str(&vmt) else {
@@ -918,20 +956,24 @@ impl AssetLoader for BspAssetLoader {
                     vmt = mat.apply(&base).expect("bad vmt patch");
                 }
 
-                let texture = if let Some(name) = vmt.base_texture() {
-                    if let Ok(texture) = load_texture(&bsp, load_context, name).await {
-                        Some(texture)
-                    } else {
-                        warn!("Using default texture for missing texture: {}", name);
-                        println!("{}", std::backtrace::Backtrace::capture());
-                        Some(default_texture.clone())
+                let (texture, base_vtf_info) = if let Some(name) = vmt.base_texture() {
+                    match load_texture(&bsp, load_context, name).await {
+                        Ok((texture, vtf)) => (Some(texture), Some(vtf)),
+                        Err(_) => {
+                            warn!("Using default texture for missing texture: {}", name);
+                            println!("{}", std::backtrace::Backtrace::capture());
+                            (Some(default_texture.clone()), None)
+                        }
                     }
                 } else {
-                    Some(default_texture.clone())
+                    (Some(default_texture.clone()), None)
                 };
 
                 let bump_map = if let Some(name) = vmt.bump_map() {
-                    load_texture(&bsp, load_context, name).await.ok()
+                    load_texture(&bsp, load_context, name)
+                        .await
+                        .ok()
+                        .map(|(handle, _)| handle)
                 } else {
                     None
                 };
@@ -944,7 +986,7 @@ impl AssetLoader for BspAssetLoader {
                     _ => (Color::WHITE, false),
                 };
 
-                StandardMaterial {
+                let material = StandardMaterial {
                     base_color,
                     base_color_texture: texture,
                     normal_map_texture: bump_map,
@@ -960,29 +1002,33 @@ impl AssetLoader for BspAssetLoader {
                         AlphaMode::Opaque
                     },
                     ..default()
-                }
+                };
+
+                (material, Some(vmt), base_vtf_info)
             } else {
                 let texture_name = texture_path(name);
-                let texture = if let Some(texture_name) = texture_name
-                    && let Ok(texture) = load_texture(&bsp, load_context, &texture_name).await
+                let (texture, vtf_info) = if let Some(texture_name) = texture_name
+                    && let Ok((texture, vtf)) = load_texture(&bsp, load_context, &texture_name).await
                 {
-                    Some(texture)
+                    (Some(texture), Some(vtf))
                 } else {
                     warn!("Using default texture for missing texture: {}", name);
                     println!("{}", std::backtrace::Backtrace::capture());
-                    Some(default_texture.clone())
+                    (Some(default_texture.clone()), None)
                 };
 
-                StandardMaterial {
+                let material = StandardMaterial {
                     base_color_texture: texture,
                     perceptual_roughness: 0.8,
                     reflectance: 0.2,
                     metallic: 0.0,
                     ..default()
-                }
+                };
+
+                (material, None, vtf_info)
             };
 
-            Ok::<_, anyhow::Error>(material)
+            Ok((material, parsed_vmt, base_vtf_info))
         };
 
         let default_material = load_context
@@ -995,7 +1041,7 @@ impl AssetLoader for BspAssetLoader {
                 continue;
             }
 
-            let Ok(material) = load_material(load_context, &name).await else {
+            let Ok((material, parsed_vmt, vtf)) = load_material(load_context, &name).await else {
                 warn!("Could not find material {name}");
                 continue;
             };
@@ -1007,6 +1053,12 @@ impl AssetLoader for BspAssetLoader {
                 load_context.add_loaded_labeled_asset::<StandardMaterial>(name.to_string(), asset);
 
             materials.insert(name.to_owned(), mat_handle.clone());
+            if let Some(vmt) = parsed_vmt {
+                vmt_materials.insert(name.to_owned(), vmt);
+            }
+            if let Some(vtf) = vtf {
+                vtf_info.insert(name.to_owned(), vtf);
+            }
         }
 
         let load_model = async |load_context: &mut LoadContext<'_>, path: &str| {
@@ -1039,14 +1091,14 @@ impl AssetLoader for BspAssetLoader {
                         let path = format!("{}{}", search_path.to_ascii_lowercase(), name);
                         let mut material_load_context = load_context.begin_labeled_asset();
                         let asset = match load_material(&mut material_load_context, &path).await {
-                            Ok(material) => material_load_context.finish(material),
+                            Ok((material, _, _)) => material_load_context.finish(material),
                             Err(e) => {
                                 warn!("Could not load model as VMT: {e}");
                                 let texture =
                                     match load_texture(&bsp, &mut material_load_context, &path)
                                         .await
                                     {
-                                        Ok(texture) => texture,
+                                        Ok((texture, _)) => texture,
                                         Err(e) => {
                                             warn!("Could not load model as VMT: {e}");
                                             continue;
@@ -1193,7 +1245,7 @@ impl AssetLoader for BspAssetLoader {
             for option in dir_options.iter() {
                 let path = format!("skybox/{skybox}{option}");
                 match load_texture(&bsp, load_context, &path).await {
-                    Ok(image) => {
+                    Ok((image, _)) => {
                         skybox_images.push(image);
                         continue 'build_sides;
                     }
@@ -1209,6 +1261,8 @@ impl AssetLoader for BspAssetLoader {
         Ok(BspAsset {
             bsp: Arc::new(bsp),
             materials: Arc::new(materials),
+            vmt_materials: Arc::new(vmt_materials),
+            vtf_info: Arc::new(vtf_info),
             models: Arc::new(models),
             default_material,
             skybox_images,
@@ -1251,13 +1305,25 @@ async fn load_texture<'a>(
     bsp: &Bsp,
     load_context: &mut LoadContext<'a>,
     name: &str,
-) -> anyhow::Result<Handle<Image>> {
+) -> anyhow::Result<(Handle<Image>, VtfInfo)> {
     let path = texture_path(&name).unwrap_or_else(|| name.to_string());
     let Ok(data) = read_vpk_file(bsp, load_context, &path).await else {
         bail!("no such texture: {:?}", path);
     };
-    let image = vtf::from_bytes(&data).expect("bad vtf");
-    let mut image = image.highres_image.decode(0)?;
+    let vtf_file = vtf::from_bytes(&data).expect("bad vtf");
+    let header_width = vtf_file.header.width;
+    let header_height = vtf_file.header.height;
+    let flags = vtf_file.header.flags;
+    let format = format!("{:?}", vtf_file.header.highres_image_format);
+    let mut image = vtf_file.highres_image.decode(0)?;
+    let vtf_info = VtfInfo {
+        width: header_width,
+        height: header_height,
+        decoded_width: image.width(),
+        decoded_height: image.height(),
+        flags,
+        format,
+    };
 
     // Fixup skybox orientations
     if name.contains("skybox") {
@@ -1300,7 +1366,7 @@ async fn load_texture<'a>(
         });
     }
 
-    Ok(load_context.add_labeled_asset(path, texture))
+    Ok((load_context.add_labeled_asset(path, texture), vtf_info))
 }
 
 #[instrument(skip(bsp, load_context))]

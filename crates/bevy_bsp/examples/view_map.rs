@@ -12,6 +12,8 @@ use bevy::render::view::Hdr;
 use bevy_ahoy::camera::CharacterControllerCameraOf;
 use bevy_ahoy::input::{Jump, Movement, RotateCamera};
 use bevy_ahoy::{AhoyPlugins, CharacterController};
+use bevy_bsp::crosshair_pointer::CrosshairPointerPlugin;
+use bevy_bsp::debug::BspDebugPlugin;
 use bevy_bsp::visdata::{DisableVisibility, LockViscluster};
 use bevy_bsp::{BspAsset, BspLoaderPlugin, LightmapSettings, MapAssets, spawn_map_entities};
 use bevy_enhanced_input::action::Action;
@@ -198,6 +200,9 @@ fn main() {
     app.add_plugins((
         VpkPlugin,
         DefaultPlugins,
+        MeshPickingPlugin,
+        BspDebugPlugin,
+        CrosshairPointerPlugin,
         BspLoaderPlugin,
         PlayerPlugin,
         PhysicsPlugins::default(),

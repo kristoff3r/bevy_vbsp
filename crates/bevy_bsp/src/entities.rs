@@ -30,6 +30,34 @@ pub struct WorldSpawn {
     _classname: String,
 }
 
+/// Metadata for a worldspawn face mesh (BSP geometry grouped by texture).
+#[derive(Component, Debug, Clone)]
+pub struct BspWorldspawnMesh {
+    pub texture_name: String,
+}
+
+/// Metadata for a brush entity mesh (e.g. doors, func_detail).
+#[derive(Component, Debug, Clone)]
+pub struct BspBrushEntityMesh {
+    pub texture_name: String,
+    pub model_index: usize,
+    pub classname: String,
+}
+
+/// Metadata for a MDL model mesh (prop entities defined in entity data).
+#[derive(Component, Debug, Clone)]
+pub struct BspEntityModelMesh {
+    pub model_path: String,
+    pub classname: String,
+}
+
+/// Metadata for a static prop mesh.
+#[derive(Component, Debug, Clone)]
+pub struct BspStaticPropMesh {
+    pub model_path: String,
+    pub prop_index: usize,
+}
+
 #[derive(Clone)]
 pub struct BspMesh {
     positions: Vec<Vec3>,
@@ -465,6 +493,9 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
         let mesh_handle = meshes.add(mesh);
 
         let mut out = commands.spawn((
+            BspWorldspawnMesh {
+                texture_name: texture_name.clone(),
+            },
             CollisionMargin(0.01),
             collider,
             RigidBody::Static,
@@ -496,6 +527,9 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
         let mesh_handle = meshes.add(mesh);
 
         let mut out = commands.spawn((
+            BspWorldspawnMesh {
+                texture_name: texture_name.clone(),
+            },
             FS::orphaned_face_bundle(),
             CollisionMargin(0.01),
             collider,
@@ -544,6 +578,8 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
     styles_to_image: &HashMap<LightmapStyle, (Handle<Image>, UVec2)>,
     face_to_lightmap_uv: &HashMap<u32, vbsp::Rect>,
     transform: Transform,
+    classname: &str,
+    model_index: usize,
 ) {
     let mut meshes_to_spawn: HashMap<(String, Option<Handle<Image>>), (Mesh, Option<Lightmap>)> =
         HashMap::new();
@@ -608,6 +644,11 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
         let mesh_handle = meshes.add(mesh);
 
         let mut entity = commands.spawn((
+            BspBrushEntityMesh {
+                texture_name: texture_name.clone(),
+                model_index,
+                classname: classname.to_owned(),
+            },
             Mesh3d(mesh_handle),
             MeshMaterial3d(material.clone()),
             transform,

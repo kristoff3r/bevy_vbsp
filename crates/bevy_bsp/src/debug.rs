@@ -1,4 +1,5 @@
 use bevy::{
+    asset::RenderAssetUsages,
     color::palettes::tailwind::{PINK_100, RED_500},
     mesh::VertexAttributeValues,
     pbr::wireframe::{Wireframe, WireframeColor, WireframePlugin},
@@ -11,7 +12,7 @@ use bevy::{
 };
 
 use crate::{
-    BspAsset, MapAssets,
+    BspAsset, BspSpawnSettings, MapAssets,
     entities::{BspBrushEntityMesh, BspEntityModelMesh, BspStaticPropMesh, BspWorldspawnMesh},
 };
 
@@ -21,6 +22,11 @@ pub struct BspDebugPlugin;
 
 impl Plugin for BspDebugPlugin {
     fn build(&self, app: &mut App) {
+        // Mesh-picking ray-casts need CPU-side vertex data, so retain BSP meshes in
+        // the main world (the default drops them after GPU upload).
+        app.insert_resource(BspSpawnSettings {
+            mesh_usages: RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        });
         app.add_plugins(WireframePlugin::default());
         app.init_resource::<HighlightedEntity>();
         app.add_systems(Startup, spawn_debug_panel);

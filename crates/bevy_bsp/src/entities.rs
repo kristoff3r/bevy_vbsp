@@ -99,17 +99,19 @@ impl BspMesh {
     }
 }
 
-impl From<BspMesh> for Mesh {
-    fn from(value: BspMesh) -> Self {
-        Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, value.texture_uvs)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, value.lightmap_uvs)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, value.normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, value.positions)
-        .with_inserted_indices(Indices::U16(value.indices))
+impl BspMesh {
+    /// Build a renderable [`Mesh`] from this BSP geometry.
+    ///
+    /// `usages` controls whether the mesh data is retained in the main world.
+    /// Picking ray-casts require [`RenderAssetUsages::MAIN_WORLD`]; see
+    /// [`BspMeshUsages`](crate::BspMeshUsages).
+    pub fn into_mesh(self, usages: RenderAssetUsages) -> Mesh {
+        Mesh::new(PrimitiveTopology::TriangleList, usages)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.texture_uvs)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.lightmap_uvs)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+            .with_inserted_indices(Indices::U16(self.indices))
     }
 }
 
@@ -278,6 +280,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
     model: vbsp::Handle<'_, vbsp::Model>,
     styles_to_image: &HashMap<LightmapStyle, (Handle<Image>, UVec2)>,
     face_to_lightmap_uv: &HashMap<u32, vbsp::Rect>,
+    usages: RenderAssetUsages,
 ) -> Entity {
     struct ConstructedFace {
         texture_name: String,
@@ -490,7 +493,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
             });
 
         let collider = mesh.collider();
-        let mesh_handle = meshes.add(mesh);
+        let mesh_handle = meshes.add(mesh.into_mesh(usages));
 
         let mut out = commands.spawn((
             BspWorldspawnMesh {
@@ -524,7 +527,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
             });
 
         let collider = mesh.collider();
-        let mesh_handle = meshes.add(mesh);
+        let mesh_handle = meshes.add(mesh.into_mesh(usages));
 
         let mut out = commands.spawn((
             BspWorldspawnMesh {
@@ -580,6 +583,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
     transform: Transform,
     classname: &str,
     model_index: usize,
+    usages: RenderAssetUsages,
 ) {
     let mut meshes_to_spawn: HashMap<(String, Option<Handle<Image>>), (Mesh, Option<Lightmap>)> =
         HashMap::new();
@@ -605,7 +609,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
             continue;
         };
 
-        let mesh = mesh.into();
+        let mesh = mesh.into_mesh(usages);
 
         match meshes_to_spawn.entry((
             face.texture().name().to_ascii_lowercase(),
@@ -670,13 +674,14 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
 pub fn spawn_mdl_model(
     bsp_asset: &BspAsset,
     model: &vmdl::Model,
+    usages: RenderAssetUsages,
 ) -> impl Iterator<Item = (Mesh, Handle<StandardMaterial>)> {
     // TODO: Handle bones, since many models won't render with the correct
     // transform if they aren't handled.
     model
         .meshes()
         .zip(model.textures())
-        .map(|(mdl_mesh, texture_info)| {
+        .map(move |(mdl_mesh, texture_info)| {
             let (vertices, normals, uvs): (Vec<_>, Vec<_>, Vec<_>) = mdl_mesh
                 .vertices()
                 .map(|v| {
@@ -697,10 +702,7 @@ pub fn spawn_mdl_model(
                 })
                 .collect::<Vec<u16>>();
 
-            let mesh = Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD,
-            )
+            let mesh = Mesh::new(PrimitiveTopology::TriangleList, usages)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)

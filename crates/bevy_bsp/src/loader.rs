@@ -529,7 +529,7 @@ async fn read_vpk_file(
     path: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let base_path = AssetPath::default().with_source("vpk").into_owned();
-    let asset_path = base_path.resolve(path)?;
+    let asset_path = base_path.resolve_str(path)?;
     if let Ok(data) = load_context.read_asset_bytes(asset_path).await {
         Ok(data)
     } else if let Ok(Some(data)) = bsp.pack.get(path) {

@@ -6,6 +6,7 @@ pub mod entities;
 pub mod loader;
 pub mod matcher;
 pub mod mesh;
+pub mod util;
 pub mod visdata;
 
 use std::{ops::Deref, sync::OnceLock};
@@ -162,7 +163,8 @@ impl Plugin for BspLoaderPlugin {
                         .data
                         .get("origin")
                         .and_then(|e| e.as_value())
-                        .and_then(|s| Vec3::parse(s).ok())
+                        .and_then(|s| <[f32; 3]>::parse(s).ok())
+                        .map(Vec3::from_array)
                         .unwrap_or_default();
 
                     let angles: Angles = entity
@@ -738,7 +740,7 @@ pub fn spawn_map_entities(
             commands.entity(*camera).insert((
                 //
                 Skybox {
-                    image,
+                    image: Some(image),
                     brightness: 1000.0,
                     ..default()
                 },

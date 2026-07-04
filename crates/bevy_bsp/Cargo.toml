@@ -15,7 +15,6 @@ nightly = []
 avian3d.workspace = true
 bevy.workspace = true
 bevy_vpk.workspace = true
-bevy_n2m.workspace = true
 
 anyhow.workspace = true
 arrayvec.workspace = true
@@ -48,4 +47,4 @@ itertools.workspace = true
 bevy = { workspace = true, features = ["bevy_dev_tools"] }
 bevy_enhanced_input.workspace = true
 bevy_ahoy.workspace = true
-bevy-inspector-egui = "0.36"
+bevy-inspector-egui = "0.37"

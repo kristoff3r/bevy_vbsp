@@ -1,12 +1,9 @@
 use avian3d::prelude::{Collider, CollisionMargin, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
-    camera::{
-        primitives::{Aabb, HalfSpace},
-        visibility::RenderLayers,
-    },
+    camera::{primitives::Aabb, visibility::RenderLayers},
     ecs::entity::EntityHashSet,
-    math::{bounding::Aabb3d, prelude::*},
+    math::{bounding::Aabb3d, prelude::*, primitives::HalfSpace},
     mesh::{Indices, PrimitiveTopology},
     pbr::Lightmap,
     platform::collections::{HashMap, hash_map::Entry},

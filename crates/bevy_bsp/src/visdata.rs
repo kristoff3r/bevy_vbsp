@@ -1,10 +1,11 @@
+use crate::util::n2m::{Relationship, RelationshipTarget};
 use arrayvec::ArrayVec;
-use bevy::camera::primitives::HalfSpace;
 use bevy::camera::visibility::Visibility;
 use bevy::ecs::lifecycle::Insert;
 use bevy::ecs::observer::On;
 use bevy::ecs::system::ParallelCommands;
 use bevy::math::bounding::{Aabb3d, IntersectsVolume};
+use bevy::math::primitives::HalfSpace;
 use bevy::math::{Mat4, Vec3, Vec3A, prelude::*};
 use bevy::transform::TransformPoint;
 use bevy::{
@@ -27,7 +28,6 @@ use bevy::{
     ui::{Node, px, widget::Text},
     utils::Parallel,
 };
-use bevy_n2m::{Relationship, RelationshipTarget};
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator as _, ParallelExtend as _, ParallelIterator};
 
@@ -314,6 +314,8 @@ fn recalculate_visleaf(
 struct InsertIfNotEqual<C>(C);
 
 impl<C: Component + PartialEq> EntityCommand for InsertIfNotEqual<C> {
+    type Out = ();
+
     fn apply(self, mut entity: EntityWorldMut) {
         let existing = entity.get::<C>();
 

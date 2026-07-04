@@ -60,7 +60,7 @@ fn spawn_debug_panel(mut commands: Commands) {
             DebugPanel,
             Text::new("No mesh selected"),
             TextFont {
-                font_size: 10.0,
+                font_size: FontSize::Px(10.0),
                 ..default()
             },
             TextColor(Color::WHITE),

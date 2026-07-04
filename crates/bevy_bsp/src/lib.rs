@@ -367,9 +367,9 @@ impl ProcessedMdl {
     where
         I: IntoIterator<Item = (Mesh, Handle<StandardMaterial>)>,
     {
-        // `Mesh::merge` only extends attributes that already exist on the target, so merging
-        // into a freshly-`new`ed (attribute-less) mesh is a no-op — it stays empty and yields
-        // no collider. Seed the combined mesh with the first component, then merge the rest.
+        // `Mesh::merge` only extends attributes that already exist on the
+        // target, so merging into an empty mesh does nothing. Seed the combined
+        // mesh with the first component, then merge the rest.
         let mut collision_mesh: Option<Mesh> = None;
 
         let components = components
@@ -396,8 +396,7 @@ impl ProcessedMdl {
         }
     }
 
-    /// Collider for a [`RigidBody::Static`] placement. An exact triangle mesh — cheap to build
-    /// and accurate for concave geometry. This is what the hundreds of static props use.
+    /// Collider for a [`RigidBody::Static`] placement.
     pub fn static_collider(&self) -> Option<Collider> {
         self.static_collider
             .get_or_init(|| {
@@ -409,8 +408,7 @@ impl ProcessedMdl {
     }
 
     /// Collider for a [`RigidBody::Dynamic`] placement. Trimeshes have no volume and can't drive
-    /// dynamic mass/contacts, so this falls back to convex decomposition (VHACD). Expensive, but
-    /// only paid for models that are actually placed dynamically.
+    /// dynamic mass/contacts, so this falls back to convex decomposition (VHACD).
     pub fn dynamic_collider(&self) -> Option<Collider> {
         self.dynamic_collider
             .get_or_init(|| {

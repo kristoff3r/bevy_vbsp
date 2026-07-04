@@ -230,6 +230,7 @@ impl FaceSpawner for GlobalFaceSpawner {
 
 pub fn spawn_worldspawn<FS: FaceSpawner>(
     commands: &mut Commands,
+    map_root: Entity,
     bsp_asset: &BspAsset,
     meshes: &mut Assets<Mesh>,
     model: vbsp::Handle<'_, vbsp::Model>,
@@ -283,6 +284,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
 
     let root_ent = commands
         .spawn((
+            ChildOf(map_root),
             Visibility::Visible,
             Transform::from_matrix(SOURCE_TO_BEVY.into()),
         ))
@@ -485,6 +487,8 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
         let mesh_handle = meshes.add(mesh.into_mesh(usages));
 
         let mut out = commands.spawn((
+            // Already in the map hierarchy via `root_ent` (itself a child of
+            // the map root).
             BspWorldspawnMesh {
                 texture_name: texture_name.clone(),
             },
@@ -530,6 +534,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
 
 pub fn spawn_bsp_model<FS: FaceSpawner>(
     commands: &mut Commands,
+    map_root: Entity,
     bsp_asset: &BspAsset,
     meshes: &mut Assets<Mesh>,
     model: vbsp::Handle<'_, vbsp::Model>,
@@ -603,6 +608,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
         let mesh_handle = meshes.add(mesh);
 
         let mut entity = commands.spawn((
+            ChildOf(map_root),
             BspBrushEntityMesh {
                 texture_name: texture_name.clone(),
                 model_index,

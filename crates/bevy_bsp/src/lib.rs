@@ -124,6 +124,7 @@ impl Plugin for BspLoaderPlugin {
 
                     spawn_worldspawn::<DefaultFaceSpawner>(
                         &mut commands,
+                        entity.bsp,
                         bsp_asset,
                         &mut meshes,
                         bsp_asset.bsp.models().next().expect("No worldspawn"),
@@ -186,6 +187,7 @@ impl Plugin for BspLoaderPlugin {
                             let model_handle = bsp_asset.bsp.models().nth(idx).unwrap();
                             spawn_bsp_model::<DefaultFaceSpawner>(
                                 &mut commands,
+                                entity.bsp,
                                 bsp_asset,
                                 &mut meshes,
                                 model_handle,
@@ -223,11 +225,17 @@ impl Plugin for BspLoaderPlugin {
                                 };
 
                             if let Some(collider) = processed_mdl.dynamic_collider() {
-                                commands.spawn((collider, RigidBody::Dynamic, transform));
+                                commands.spawn((
+                                    ChildOf(entity.bsp),
+                                    collider,
+                                    RigidBody::Dynamic,
+                                    transform,
+                                ));
                             }
 
                             for VMdlComponent { mesh, material } in &processed_mdl.components {
                                 commands.spawn((
+                                    ChildOf(entity.bsp),
                                     BspEntityModelMesh {
                                         model_path: model.to_string(),
                                         classname: entity.class.clone(),
@@ -249,6 +257,14 @@ impl Plugin for BspLoaderPlugin {
 pub struct LightmapSettings {
     pub astc_block_size: Option<AstcBlock>,
 }
+
+/// The single root entity of a loaded map. Everything spawned for the map
+/// (world geometry, props, colliders, BSP entity data, lighting) is a
+/// descendant, so despawning this one entity unloads the whole map
+/// (visibility link entities are cleaned up by relationship hooks). Also
+/// carries the [`GlobalBspInfo`].
+#[derive(Component, Default, Copy, Clone, Debug)]
+pub struct BspMapRoot;
 
 // TODO: This should be a relationship, but `vbsp::GenericEntity` doesn't implement `Default` right now
 #[derive(Component)]
@@ -448,6 +464,18 @@ pub fn spawn_map_entities(
 
     let bsp_asset = bsp_asset_data.get(&map_assets.bsp).cloned().unwrap();
     let bsp = &bsp_asset.bsp;
+
+    // The single root everything map-related hangs off of; despawning it
+    // unloads the map. It also carries the `GlobalBspInfo` (inserted at the
+    // end of this function, once the lightmap/model caches are built).
+    let world_root = commands
+        .spawn((
+            BspMapRoot,
+            Name::new("BSP Map"),
+            Transform::default(),
+            Visibility::default(),
+        ))
+        .id();
 
     let packer = DefaultLightmapPacker::<PerStyleLightmapData<Rgba32FImage>>::new(
         qbsp::prelude::ComputeLightmapSettings {
@@ -652,11 +680,12 @@ pub fn spawn_map_entities(
         };
 
         if let Some(collider) = processed_mdl.static_collider() {
-            commands.spawn((collider, RigidBody::Static, transform));
+            commands.spawn((ChildOf(world_root), collider, RigidBody::Static, transform));
         }
 
         for (mesh, material, lightmap) in bundles {
             let mut new_entity = commands.spawn((
+                ChildOf(world_root),
                 BspStaticPropMesh {
                     model_path: name.clone(),
                     prop_index: i,
@@ -748,22 +777,25 @@ pub fn spawn_map_entities(
         }
     }
 
-    let world_root = commands
-        .spawn(GlobalBspInfo {
-            styles_to_image,
-            processed_models,
-            bsp: map_assets.bsp.clone(),
-            atlas_rects,
-        })
-        .id();
+    commands.entity(world_root).insert(GlobalBspInfo {
+        styles_to_image,
+        processed_models,
+        bsp: map_assets.bsp.clone(),
+        atlas_rects,
+    });
 
     commands.spawn_batch(
         bsp.entities
             .iter()
             .map(|raw_entity| raw_entity.parse().unwrap())
-            .map(move |entity| BspEntity {
-                entity,
-                bsp: world_root,
+            .map(move |entity| {
+                (
+                    ChildOf(world_root),
+                    BspEntity {
+                        entity,
+                        bsp: world_root,
+                    },
+                )
             })
             .collect::<Vec<_>>(),
     );

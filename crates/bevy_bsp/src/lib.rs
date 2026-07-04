@@ -6,7 +6,6 @@ pub mod entities;
 pub mod loader;
 pub mod matcher;
 pub mod mesh;
-pub mod serde_helpers;
 pub mod visdata;
 
 use std::{ops::Deref, sync::OnceLock};
@@ -33,8 +32,7 @@ use qbsp::{
     data::LightmapStyle,
     mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData},
 };
-pub use serde_helpers::parse_vec3;
-use vbsp::{Angles, StaticPropLumpFlags};
+use vbsp::{Angles, EntityProp, StaticPropLumpFlags};
 
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 
@@ -164,7 +162,7 @@ impl Plugin for BspLoaderPlugin {
                         .data
                         .get("origin")
                         .and_then(|e| e.as_value())
-                        .and_then(|s| parse_vec3(s).ok())
+                        .and_then(|s| Vec3::parse(s).ok())
                         .unwrap_or_default();
 
                     let angles: Angles = entity

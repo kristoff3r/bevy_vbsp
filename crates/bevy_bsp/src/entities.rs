@@ -1,5 +1,3 @@
-pub mod info_player;
-
 use bevy::prelude::*;
 
 /// Metadata for a worldspawn face mesh (BSP geometry grouped by texture).

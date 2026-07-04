@@ -551,7 +551,7 @@ fn setup_walk_player(
         return;
     };
 
-    let Some(spawn_point) = bsp.t_spawn_points.first() else {
+    let Some(spawn_point) = bsp.spawn_points.first() else {
         return;
     };
 

@@ -45,8 +45,7 @@ pub struct BspAsset {
     pub default_material: MeshMaterial3d<StandardMaterial>,
     pub cubemap: Handle<Image>,
     pub skybox_images: Vec<Handle<Image>>,
-    pub t_spawn_points: Vec<Transform>,
-    pub ct_spawn_points: Vec<Transform>,
+    pub spawn_points: Vec<Transform>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -276,8 +275,7 @@ impl AssetLoader for BspAssetLoader {
             };
 
         let mut models = HashMap::new();
-        let mut t_spawn_points = Vec::new();
-        let mut ct_spawn_points = Vec::new();
+        let mut spawn_points = Vec::new();
         for entity in &bsp.entities {
             let entity: GenericEntity = entity.parse().unwrap();
             if let Some(model) = entity.data.get("model")
@@ -327,18 +325,19 @@ impl AssetLoader for BspAssetLoader {
 
                 let quat = angles.as_quaternion();
                 let quat = Quat::from_xyzw(quat.x, quat.y, quat.z, quat.w);
-                let transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
+                let mut transform = Transform::from_matrix(SOURCE_TO_BEVY.into())
                     * Transform::from_translation(origin).with_rotation(quat);
+                transform.scale = Vec3::ONE;
                 match entity.class.as_str() {
                     "info_player_terrorist" => {
-                        t_spawn_points.push(transform);
+                        spawn_points.push(transform);
                     }
                     "info_player_counterterrorist" => {
-                        ct_spawn_points.push(transform);
+                        spawn_points.push(transform);
                     }
                     // `info_player_logo` is used in `test_hardware` in CS:S
                     "info_player_start" | "info_player_teamspawn" | "info_player_logo" => {
-                        t_spawn_points.push(transform)
+                        spawn_points.push(transform)
                     }
                     _ => {
                         warn!("unknown class: {}", entity.class);
@@ -422,8 +421,7 @@ impl AssetLoader for BspAssetLoader {
             default_material,
             skybox_images,
             cubemap,
-            t_spawn_points,
-            ct_spawn_points,
+            spawn_points,
         })
     }
 

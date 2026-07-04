@@ -5,18 +5,19 @@ pub mod debug;
 pub mod entities;
 pub mod loader;
 pub mod matcher;
+pub mod mesh;
 pub mod serde_helpers;
 pub mod visdata;
 
-use std::ops::Deref;
+use std::{ops::Deref, sync::OnceLock};
 
+use astc::{astc_convert, extents};
 use avian3d::prelude::{Collider, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
     core_pipeline::Skybox,
     image::TextureFormatPixelInfo,
-    math::{Affine3A, primitives},
-    mesh::PrimitiveTopology,
+    math::Affine3A,
     pbr::Lightmap,
     platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
@@ -24,21 +25,21 @@ use bevy::{
         AstcBlock, Extent3d, TextureDimension, TextureViewDescriptor, TextureViewDimension,
     },
 };
-use astc::{astc_convert, extents};
-pub use loader::{BspAsset, BspAssetLoader, BspSettings, VtfInfo};
-pub use serde_helpers::parse_vec3;
-use entities::spawn_bsp_model;
 use image::{Rgba32FImage, imageops::FilterType};
 use itertools::Either;
+pub use loader::{BspAsset, BspAssetLoader, BspSettings, VtfInfo};
+use mesh::spawn_bsp_model;
 use qbsp::{
     data::LightmapStyle,
     mesh::lightmap::{DefaultLightmapPacker, PerStyleLightmapData},
 };
+pub use serde_helpers::parse_vec3;
 use vbsp::{Angles, StaticPropLumpFlags};
 
 use bevy_vpk::{vmt::VmtAssetLoader, vtf::VtfAssetLoader};
 
-use entities::{BspEntityModelMesh, BspStaticPropMesh, spawn_mdl_model, spawn_worldspawn};
+use entities::{BspEntityModelMesh, BspStaticPropMesh};
+use mesh::{spawn_mdl_model, spawn_worldspawn};
 
 // Re-export everything while we use a lot of git dependencies
 pub use bevy_vpk;
@@ -50,8 +51,8 @@ pub use vmt_parser;
 pub use vpk;
 
 use crate::{
-    entities::FaceSpawner,
     matcher::{AnyString, Not, StringMatcher},
+    mesh::FaceSpawner,
 };
 
 pub struct BspLoaderPlugin;
@@ -221,7 +222,7 @@ impl Plugin for BspLoaderPlugin {
                                     }
                                 };
 
-                            if let Some(collider) = processed_mdl.collider.clone() {
+                            if let Some(collider) = processed_mdl.dynamic_collider() {
                                 commands.spawn((collider, RigidBody::Dynamic, transform));
                             }
 
@@ -354,7 +355,13 @@ pub struct VMdlComponent {
 
 pub struct ProcessedMdl {
     pub components: Vec<VMdlComponent>,
-    pub collider: Option<Collider>,
+    /// Combined collision geometry, retained so colliders can be built lazily on first use.
+    collision_mesh: Option<Mesh>,
+    /// Exact triangle-mesh collider for static bodies. Cheap to build; cached on first use.
+    static_collider: OnceLock<Option<Collider>>,
+    /// Convex-decomposition collider for dynamic bodies. Expensive (VHACD), so it is only built
+    /// for models actually placed as dynamic props, and cached on first use.
+    dynamic_collider: OnceLock<Option<Collider>>,
 }
 
 impl ProcessedMdl {
@@ -362,15 +369,20 @@ impl ProcessedMdl {
     where
         I: IntoIterator<Item = (Mesh, Handle<StandardMaterial>)>,
     {
-        let mut combined_mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::MAIN_WORLD,
-        );
+        // `Mesh::merge` only extends attributes that already exist on the target, so merging
+        // into a freshly-`new`ed (attribute-less) mesh is a no-op — it stays empty and yields
+        // no collider. Seed the combined mesh with the first component, then merge the rest.
+        let mut collision_mesh: Option<Mesh> = None;
 
         let components = components
             .into_iter()
             .map(|(mesh, material)| {
-                combined_mesh.merge(&mesh).unwrap();
+                match &mut collision_mesh {
+                    Some(combined) => combined
+                        .merge(&mesh)
+                        .expect("MDL component meshes share a primitive topology"),
+                    None => collision_mesh = Some(mesh.clone()),
+                }
                 VMdlComponent {
                     mesh: meshes.add(mesh),
                     material,
@@ -380,16 +392,43 @@ impl ProcessedMdl {
 
         Self {
             components,
-            collider: Collider::convex_decomposition_from_mesh(&combined_mesh),
+            collision_mesh,
+            static_collider: OnceLock::new(),
+            dynamic_collider: OnceLock::new(),
         }
+    }
+
+    /// Collider for a [`RigidBody::Static`] placement. An exact triangle mesh — cheap to build
+    /// and accurate for concave geometry. This is what the hundreds of static props use.
+    pub fn static_collider(&self) -> Option<Collider> {
+        self.static_collider
+            .get_or_init(|| {
+                self.collision_mesh
+                    .as_ref()
+                    .and_then(Collider::trimesh_from_mesh)
+            })
+            .clone()
+    }
+
+    /// Collider for a [`RigidBody::Dynamic`] placement. Trimeshes have no volume and can't drive
+    /// dynamic mass/contacts, so this falls back to convex decomposition (VHACD). Expensive, but
+    /// only paid for models that are actually placed dynamically.
+    pub fn dynamic_collider(&self) -> Option<Collider> {
+        self.dynamic_collider
+            .get_or_init(|| {
+                self.collision_mesh
+                    .as_ref()
+                    .and_then(Collider::convex_decomposition_from_mesh)
+            })
+            .clone()
     }
 }
 
 #[cfg(not(feature = "visdata"))]
-type DefaultFaceSpawner = crate::entities::GlobalFaceSpawner;
+type DefaultFaceSpawner = crate::mesh::GlobalFaceSpawner;
 
 #[cfg(feature = "visdata")]
-type DefaultFaceSpawner = crate::entities::VisclusterFaceSpawner;
+type DefaultFaceSpawner = crate::mesh::VisclusterFaceSpawner;
 
 pub fn spawn_map_entities(
     In(lightmap_settings): In<LightmapSettings>,
@@ -444,23 +483,6 @@ pub fn spawn_map_entities(
     info!("Loaded BSP models: {}", bsp.models().count());
 
     let mut processed_models: HashMap<String, ProcessedMdl> = Default::default();
-
-    let spawn_point_mesh = meshes.add(primitives::Cuboid {
-        half_size: Vec3::splat(0.5 * SCALE.recip()),
-    });
-
-    for transform in bsp_asset
-        .t_spawn_points
-        .iter()
-        .chain(bsp_asset.ct_spawn_points.iter())
-    {
-        commands.spawn((
-            Name::new("Spawn Point"),
-            *transform,
-            bsp_asset.default_material.clone(),
-            Mesh3d(spawn_point_mesh.clone()),
-        ));
-    }
 
     for (i, static_prop) in bsp.static_props().enumerate() {
         if static_prop.flags.contains(StaticPropLumpFlags::NO_DRAW) {
@@ -631,7 +653,7 @@ pub fn spawn_map_entities(
             )
         };
 
-        if let Some(collider) = processed_mdl.collider.clone() {
+        if let Some(collider) = processed_mdl.static_collider() {
             commands.spawn((collider, RigidBody::Static, transform));
         }
 

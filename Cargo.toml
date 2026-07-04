@@ -40,24 +40,23 @@ rayon = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
 
-# [patch."https://github.com/eira-fransham/qbsp.git"]
-# qbsp = { path = "../qbsp" }
+[patch."https://github.com/eira-fransham/qbsp.git"]
+qbsp = { path = "../qbsp" }
 
-# [patch."https://github.com/eira-fransham/vpk-rs.git"]
-# vpk = { path = "../vpk-rs" }
+[patch."https://github.com/eira-fransham/vpk-rs.git"]
+vpk = { path = "../vpk-rs" }
 
-# [patch."https://github.com/eira-fransham/vmdl.git"]
-# vmdl = { path = "../vmdl" }
+[patch."https://github.com/eira-fransham/vmdl.git"]
+vmdl = { path = "../vmdl" }
 
-# [patch."https://github.com/eira-fransham/vbsp.git"]
-# vbsp = { path = "../vbsp" }
+[patch."https://github.com/eira-fransham/vbsp.git"]
+vbsp = { path = "../vbsp" }
 
-# [patch.crates-io]
-# vtf = { path = "../vtf-rs" }
+[patch."https://github.com/eira-fransham/vtf-rs.git"]
+vtf = { path = "../vtf-rs" }
 
-# TODO: Some internals need to be exposed, so we have a vendored fork
 [patch."https://codeberg.org/icewind/vmt-parser.git"]
-vmt-parser = { path = "crates/vmt-parser" }
+vmt-parser = { path = "../vmt-parser" }
 
 # Remove spurious validation errors
 [profile.dev.package.wgpu-types]

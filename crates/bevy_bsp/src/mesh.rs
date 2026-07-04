@@ -651,22 +651,16 @@ pub fn spawn_mdl_model(
                 })
                 .multiunzip();
 
-            // vmdl returns indices into the flattened strip-vertex list, which routinely
-            // exceeds `u16::MAX` for larger models. A `u16` buffer truncated those (and
-            // `vertices.len() as u16` wrapped), silently dropping most triangles — leaving big
-            // props with a degenerate mesh and so no convex-decomposition collider. Use `u32`.
-            let vertex_count = vertices.len();
             let indices = mdl_mesh
                 .vertex_strip_indices()
-                .filter(|&idx| idx < vertex_count)
-                .map(|idx| idx as u32)
-                .collect::<Vec<u32>>();
+                .map(|idx| idx.try_into().expect("mdl index overflow"))
+                .collect::<Vec<u16>>();
 
             let mesh = Mesh::new(PrimitiveTopology::TriangleList, usages)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-                .with_inserted_indices(Indices::U32(indices));
+                .with_inserted_indices(Indices::U16(indices));
 
             let texture_path = texture_info.name.to_ascii_lowercase();
             let material = bsp_asset.materials.get(&texture_path).unwrap_or_else(|| {

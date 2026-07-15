@@ -20,7 +20,7 @@ qbsp = { git = "https://github.com/eira-fransham/qbsp.git" }
 vbsp = { git = "https://github.com/eira-fransham/vbsp.git" }
 vdf-reader = { git = "https://codeberg.org/icewind/vdf-reader.git" }
 vmdl = { git = "https://github.com/eira-fransham/vmdl.git" }
-vmt-parser = { git = "https://codeberg.org/kriztw/vmt-parser.git" }
+vmt-parser = { git = "https://codeberg.org/icewind/vmt-parser.git" }
 vpk = { git = "https://github.com/eira-fransham/vpk-rs.git" }
 vtf = { git = "https://github.com/eira-fransham/vtf-rs.git" }
 

@@ -224,11 +224,11 @@ impl Plugin for BspLoaderPlugin {
                                     }
                                 };
 
-                            if let Some(collider) = processed_mdl.dynamic_collider() {
+                            if let Some(collider) = processed_mdl.static_collider() {
                                 commands.spawn((
                                     ChildOf(entity.bsp),
                                     collider,
-                                    RigidBody::Dynamic,
+                                    RigidBody::Static,
                                     transform,
                                 ));
                             }
@@ -375,9 +375,6 @@ pub struct ProcessedMdl {
     collision_mesh: Option<Mesh>,
     /// Exact triangle-mesh collider for static bodies. Cheap to build; cached on first use.
     static_collider: OnceLock<Option<Collider>>,
-    /// Convex-decomposition collider for dynamic bodies. Expensive (VHACD), so it is only built
-    /// for models actually placed as dynamic props, and cached on first use.
-    dynamic_collider: OnceLock<Option<Collider>>,
 }
 
 impl ProcessedMdl {
@@ -410,7 +407,6 @@ impl ProcessedMdl {
             components,
             collision_mesh,
             static_collider: OnceLock::new(),
-            dynamic_collider: OnceLock::new(),
         }
     }
 
@@ -421,18 +417,6 @@ impl ProcessedMdl {
                 self.collision_mesh
                     .as_ref()
                     .and_then(Collider::trimesh_from_mesh)
-            })
-            .clone()
-    }
-
-    /// Collider for a [`RigidBody::Dynamic`] placement. Trimeshes have no volume and can't drive
-    /// dynamic mass/contacts, so this falls back to convex decomposition (VHACD).
-    pub fn dynamic_collider(&self) -> Option<Collider> {
-        self.dynamic_collider
-            .get_or_init(|| {
-                self.collision_mesh
-                    .as_ref()
-                    .and_then(Collider::convex_decomposition_from_mesh)
             })
             .clone()
     }

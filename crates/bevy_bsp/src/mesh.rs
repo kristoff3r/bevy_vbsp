@@ -1,21 +1,20 @@
 use avian3d::prelude::{Collider, CollisionMargin, RigidBody};
 use bevy::{
     asset::RenderAssetUsages,
-    camera::{primitives::Aabb, visibility::RenderLayers},
-    ecs::entity::EntityHashSet,
-    math::{bounding::Aabb3d, prelude::*, primitives::HalfSpace},
+    camera::visibility::RenderLayers,
+    math::{bounding::Aabb3d, prelude::*},
     mesh::{Indices, PrimitiveTopology},
     pbr::Lightmap,
     platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
 };
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use qbsp::data::LightmapStyle;
 
 use crate::{
     BspAsset, SOURCE_TO_BEVY,
     entities::{BspBrushEntityMesh, BspWorldspawnMesh},
-    visdata::{CalculateVisleaf, DebugViscluster, VisChildren, VisTreeElementOf, Visible},
+    visdata::{CalculateVisleaf, VisClusters, VisRoot},
 };
 
 #[derive(Clone)]
@@ -56,6 +55,16 @@ impl BspMesh {
             i.checked_add(idx_offset)
                 .expect("Idx overflowed during merge")
         }));
+    }
+
+    /// Bounds in the mesh's own (BSP-local) coordinates.
+    fn aabb(&self) -> Option<Aabb3d> {
+        let (min, max) = self.positions.iter().fold(
+            (Vec3::INFINITY, Vec3::NEG_INFINITY),
+            |(min, max), &position| (min.min(position), max.max(position)),
+        );
+
+        (min.x <= max.x).then(|| Aabb3d::from_min_max(min, max))
     }
 }
 
@@ -116,35 +125,39 @@ fn mesh_from_face(
 }
 
 pub trait FaceSpawner: Default {
-    // HACK: This should be more configurable
-    const BUILD_NODE_TREE: bool;
+    /// Whether `spawn_worldspawn` should compute per-face PVS cluster
+    /// membership (and build a [`VisRoot`]) for this spawner.
+    const NEEDS_CLUSTERS: bool;
 
+    /// Extra components for loose meshes spawned outside `spawn_worldspawn`
+    /// (static props, brush-entity models) so they participate in PVS culling.
     fn orphaned_face_bundle() -> impl Bundle {}
 
+    /// `clusters` is the face's PVS membership (empty = unknown/everywhere;
+    /// always empty when [`Self::NEEDS_CLUSTERS`] is false).
     fn merge_face_mesh(
         &mut self,
-        parent: Option<Entity>,
+        clusters: Vec<u32>,
         texture: String,
         lightmap: Option<Handle<Image>>,
         mesh: BspMesh,
     );
 
-    fn finish(
-        self,
-    ) -> (
-        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
-        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
-    );
+    fn finish(self)
+    -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)>;
 }
 
+/// Groups world faces by the first cluster they appear in, so the PVS can
+/// cull them per area. The merged mesh's membership is the union of its
+/// faces' clusters — conservative (a mesh renders if *any* of its faces
+/// could be seen), never wrong.
 #[derive(Default)]
 pub struct VisclusterFaceSpawner {
-    parented_faces: HashMap<(Entity, String, Option<Handle<Image>>), BspMesh>,
-    orphaned_faces: Vec<(String, Option<Handle<Image>>, BspMesh)>,
+    faces: HashMap<(Option<u32>, String, Option<Handle<Image>>), (BspMesh, Vec<u32>)>,
 }
 
 impl FaceSpawner for VisclusterFaceSpawner {
-    const BUILD_NODE_TREE: bool = true;
+    const NEEDS_CLUSTERS: bool = true;
 
     fn orphaned_face_bundle() -> impl Bundle {
         (CalculateVisleaf, RenderLayers::none())
@@ -152,43 +165,37 @@ impl FaceSpawner for VisclusterFaceSpawner {
 
     fn merge_face_mesh(
         &mut self,
-        parent: Option<Entity>,
+        clusters: Vec<u32>,
         texture: String,
         lightmap: Option<Handle<Image>>,
         mesh: BspMesh,
     ) {
-        match parent {
-            Some(parent) => {
-                self.parented_faces
-                    .entry((parent, texture, lightmap))
-                    .and_modify(|existing| existing.merge(&mesh))
-                    .or_insert(mesh);
+        let primary = clusters.first().copied();
+
+        match self.faces.entry((primary, texture, lightmap)) {
+            Entry::Occupied(mut entry) => {
+                let (existing_mesh, existing_clusters) = entry.get_mut();
+                existing_mesh.merge(&mesh);
+                for cluster in clusters {
+                    if !existing_clusters.contains(&cluster) {
+                        existing_clusters.push(cluster);
+                    }
+                }
             }
-            None => {
-                self.orphaned_faces.push((texture, lightmap, mesh));
+            Entry::Vacant(entry) => {
+                entry.insert((mesh, clusters));
             }
         }
     }
 
     fn finish(
         self,
-    ) -> (
-        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
-        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
-    ) {
-        let Self {
-            parented_faces,
-            orphaned_faces,
-        } = self;
-
-        (
-            parented_faces
-                .into_iter()
-                .map(|((parent, texture_name, lightmap), mesh)| {
-                    (parent, texture_name, lightmap, mesh)
-                }),
-            orphaned_faces.into_iter(),
-        )
+    ) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
+        self.faces
+            .into_iter()
+            .map(|((_, texture_name, lightmap), (mesh, clusters))| {
+                (clusters.into_boxed_slice(), texture_name, lightmap, mesh)
+            })
     }
 }
 
@@ -198,11 +205,11 @@ pub struct GlobalFaceSpawner {
 }
 
 impl FaceSpawner for GlobalFaceSpawner {
-    const BUILD_NODE_TREE: bool = false;
+    const NEEDS_CLUSTERS: bool = false;
 
     fn merge_face_mesh(
         &mut self,
-        _: Option<Entity>,
+        _: Vec<u32>,
         texture: String,
         lightmap: Option<Handle<Image>>,
         mesh: BspMesh,
@@ -215,16 +222,10 @@ impl FaceSpawner for GlobalFaceSpawner {
 
     fn finish(
         self,
-    ) -> (
-        impl Iterator<Item = (Entity, String, Option<Handle<Image>>, BspMesh)>,
-        impl Iterator<Item = (String, Option<Handle<Image>>, BspMesh)>,
-    ) {
-        (
-            std::iter::empty(),
-            self.faces
-                .into_iter()
-                .map(|((texture_name, lightmap), mesh)| (texture_name, lightmap, mesh)),
-        )
+    ) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
+        self.faces
+            .into_iter()
+            .map(|((texture_name, lightmap), mesh)| (Box::default(), texture_name, lightmap, mesh))
     }
 }
 
@@ -277,11 +278,6 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
         })
         .collect::<Vec<_>>();
 
-    let Some(root) = model.root() else {
-        // TODO: Handle this better
-        panic!("Worldspawn model without root node!");
-    };
-
     let root_ent = commands
         .spawn((
             ChildOf(map_root),
@@ -290,156 +286,61 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
         ))
         .id();
 
-    let mut cluster_leaves = HashMap::<Option<u32>, (Entity, Aabb3d)>::new();
-    let mut cluster_targets = HashMap::<Option<u32>, EntityHashSet>::new();
-    let mut all_targets = EntityHashSet::new();
+    // Per-face PVS membership: primarily from the leaf-face lists; faces the
+    // leaves don't reference (displacements, node-parented faces) fall back
+    // to overlapping their bounds against the leaves. All in BSP-local
+    // coordinates, computed once here — nothing about the tree or the PVS
+    // becomes entities.
+    let vis_root = FS::NEEDS_CLUSTERS.then(|| VisRoot::from_bsp(&bsp_asset.bsp));
+    let mut face_clusters = vec![Vec::<u32>::new(); faces.len()];
 
-    struct CurNode<'a> {
-        entity: Entity,
-        handle: vbsp::Handle<'a, vbsp::Node>,
-        path_to_root: Vec<Entity>,
-    }
+    if let Some(vis_root) = &vis_root {
+        let bsp = &bsp_asset.bsp;
+        let model_face_range = first_model_face..first_model_face + model.face_count;
 
-    let mut nodes = vec![CurNode {
-        entity: root_ent,
-        handle: root,
-        path_to_root: vec![root_ent],
-    }];
+        for leaf in bsp.leaves.iter() {
+            let Ok(cluster) = u32::try_from(leaf.cluster) else {
+                continue;
+            };
 
-    let mut parents = vec![None::<Entity>; faces.len()];
+            let leaf_face_range =
+                leaf.first_leaf_face as usize..(leaf.first_leaf_face + leaf.leaf_face_count) as usize;
 
-    while let Some(cur) = nodes.pop().filter(|_| FS::BUILD_NODE_TREE) {
-        let [front, back] = cur
-            .handle
-            .children()
-            .expect("Malformed vistree")
-            .map(|child| {
-                let model_face_range = model.first_face..model.first_face + model.face_count;
-
-                match child {
-                    Either::Left(node) => {
-                        let child_ent_id = commands.spawn((
-                            Visibility::Visible,
-                            Transform::default(),
-                            RenderLayers::none(),
-                            ChildOf(root_ent),
-                            Aabb::from_min_max(node.mins.into(), node.maxs.into()),
-                            VisTreeElementOf { root: root_ent },
-                        )).id();
-
-                        all_targets.insert(child_ent_id);
-
-                        for (face_idx, _) in node.faces_with_id() {
-                            if !model_face_range.contains( &face_idx) {
-                                let missing_face = bsp_asset.bsp.face(face_idx as _);
-                                error!(
-                                    "Face {face_idx} found in model vistree that isn't in model range {model_face_range:?}: {missing_face:#?}"
-                                );
-                                continue;
-                            }
-                            let Some(face_entity) =
-                                parents.get_mut((face_idx - first_model_face) as usize)
-                            else {
-                                continue;
-                            };
-
-                            // TODO: How should we handle faces being parented to nodes but not leaves?
-                            face_entity.get_or_insert(child_ent_id);
-                        }
-
-                        let mut new_path = cur.path_to_root.clone();
-
-                        new_path.push(child_ent_id);
-
-                        nodes.push(CurNode {
-                            entity: child_ent_id,
-                            handle: node,
-                            path_to_root: new_path,
-                        });
-
-                        child_ent_id
-                    }
-                    Either::Right(leaf) => {
-                        let cluster_u32 = leaf.cluster.try_into().ok();
-
-                        let (child_ent_id, _) = cluster_leaves.entry(cluster_u32).or_insert_with(|| {
-                            let leaf_mins = Vec3::new(leaf.mins.x, leaf.mins.y, leaf.mins.z);
-                            let leaf_maxs = Vec3::new(leaf.maxs.x, leaf.maxs.y, leaf.maxs.z);
-                            let aabb = Aabb3d::from_min_max(leaf_mins, leaf_maxs);
-
-                            let child_ent_id = commands.spawn((
-                                Visibility::Visible,
-                                Transform::default(),
-                                RenderLayers::none(),
-                                ChildOf(root_ent),
-                                VisTreeElementOf { root: root_ent },
-                                Aabb::from_min_max(leaf.mins.to_array().into(), leaf.maxs.to_array().into()),
-                                DebugViscluster(cluster_u32),
-                            )).id();
-
-                            all_targets.insert(child_ent_id);
-
-                            (child_ent_id, aabb)
-                        });
-
-                        for (face_idx, _) in leaf.faces_with_id() {
-                            if !model_face_range.contains(&face_idx) {
-                                let missing_face = bsp_asset.bsp.face(face_idx as _);
-                                error!(
-                                    "Face {face_idx} found in model vistree that isn't in model range {model_face_range:?}: {missing_face:#?}"
-                                );
-                                continue;
-                            }
-                            let Some(face_entity) =
-                                parents.get_mut((face_idx - first_model_face) as usize)
-                            else {
-                                continue;
-                            };
-
-                            *face_entity = Some(*child_ent_id);
-                        }
-
-                        // Source has a weird system where it has some faces parented to nodes rather than
-                        // leaves, which means that, when treated as a view target, clusters contain all
-                        // nodes that themselves contain leaves of that cluster.
-                        cluster_targets.entry(cluster_u32).or_default().extend(
-                            std::iter::once(*child_ent_id).chain(cur.path_to_root.iter().copied())
-                        );
-
-                        *child_ent_id
-                    }
+            for leaf_face in bsp.leaf_faces.get(leaf_face_range).unwrap_or_default() {
+                let face_idx = leaf_face.face as u32;
+                if !model_face_range.contains(&face_idx) {
+                    continue;
                 }
-            });
 
-        let plane = cur.handle.plane();
+                let clusters = &mut face_clusters[(face_idx - first_model_face) as usize];
+                if !clusters.contains(&cluster) {
+                    clusters.push(cluster);
+                }
+            }
+        }
 
-        let normal = plane.normal();
-        let normal = Vec3::new(normal.x, normal.y, normal.z);
-        // Halfspace calculation is done with `- dist` in Source, but `+ dist` in Bevy.
-        let dist = -plane.dist;
+        for (face, clusters) in faces.iter().zip(&mut face_clusters) {
+            let Some(face) = face else { continue };
 
-        commands.entity(cur.entity).insert(VisChildren {
-            front,
-            back,
-            midpoint: HalfSpace::new(normal.extend(dist)),
-        });
+            if clusters.is_empty()
+                && let Some(aabb) = face.mesh.aabb()
+            {
+                vis_root.clusters_for_aabb(aabb, clusters);
+            }
+        }
     }
-
-    let faces_with_parents = faces.into_iter().zip(parents);
 
     let mut face_spawner = FS::default();
 
-    for (face, parent) in faces_with_parents {
+    for (face, clusters) in faces.into_iter().zip(face_clusters) {
         let Some(face) = face else {
             continue;
         };
 
-        face_spawner.merge_face_mesh(parent, face.texture_name, face.lightmap, face.mesh);
+        face_spawner.merge_face_mesh(clusters, face.texture_name, face.lightmap, face.mesh);
     }
 
-    let (parented_faces, orphaned_meshes) = face_spawner.finish();
-
-    for (parent, texture_name, lightmap, mesh) in parented_faces {
+    for (clusters, texture_name, lightmap, mesh) in face_spawner.finish() {
         let material = bsp_asset
             .materials
             .get(&texture_name)
@@ -461,72 +362,29 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
             RigidBody::Static,
             Mesh3d(mesh_handle),
             MeshMaterial3d(material),
-            RenderLayers::none(),
-            ChildOf(parent),
-        ));
-
-        if let Some(lightmap) = lightmap {
-            out.insert(Lightmap {
-                image: lightmap.clone(),
-                ..Default::default()
-            });
-        }
-    }
-
-    for (texture_name, lightmap, mesh) in orphaned_meshes {
-        let material = bsp_asset
-            .materials
-            .get(&texture_name)
-            .cloned()
-            .unwrap_or_else(|| {
-                warn!("No material for BSP model: {texture_name}");
-                bsp_asset.default_material.0.clone()
-            });
-
-        let collider = mesh.collider();
-        let mesh_handle = meshes.add(mesh.into_mesh(usages));
-
-        let mut out = commands.spawn((
-            // Already in the map hierarchy via `root_ent` (itself a child of
-            // the map root).
-            BspWorldspawnMesh {
-                texture_name: texture_name.clone(),
-            },
-            FS::orphaned_face_bundle(),
-            CollisionMargin(0.01),
-            collider,
-            RigidBody::Static,
-            Mesh3d(mesh_handle),
-            MeshMaterial3d(material),
-            VisTreeElementOf { root: root_ent },
             ChildOf(root_ent),
         ));
 
+        if FS::NEEDS_CLUSTERS {
+            out.insert((
+                RenderLayers::none(),
+                VisClusters {
+                    root: root_ent,
+                    clusters,
+                },
+            ));
+        }
+
         if let Some(lightmap) = lightmap {
             out.insert(Lightmap {
                 image: lightmap.clone(),
                 ..Default::default()
             });
         }
-
-        all_targets.insert(out.id());
     }
 
-    for (cluster_idx, (cluster_entity, _)) in &cluster_leaves {
-        let visible_entities = cluster_idx
-            .map(|idx| {
-                let visible_clusters = bsp_asset.bsp.vis_data.visible_clusters(idx);
-                Either::Left(
-                    visible_clusters
-                        .filter_map(|i| cluster_targets.get(&Some(i)))
-                        .flatten(),
-                )
-            })
-            .unwrap_or(Either::Right(all_targets.iter()));
-
-        for visible_entity in visible_entities {
-            commands.spawn(Visible::new(*cluster_entity, *visible_entity));
-        }
+    if let Some(vis_root) = vis_root {
+        commands.entity(root_ent).insert(vis_root);
     }
 
     root_ent

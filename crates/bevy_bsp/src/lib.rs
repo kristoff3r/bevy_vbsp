@@ -6,7 +6,6 @@ pub mod entities;
 pub mod loader;
 pub mod matcher;
 pub mod mesh;
-pub mod util;
 pub mod visdata;
 
 use std::{ops::Deref, sync::OnceLock};

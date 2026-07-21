@@ -9,7 +9,7 @@ use bevy::math::primitives::HalfSpace;
 use bevy::math::{Mat4, Vec3, Vec3A, prelude::*};
 use bevy::transform::TransformPoint;
 use bevy::{
-    app::{Last, Plugin, PostUpdate, Startup},
+    app::{Last, Plugin, PostUpdate},
     camera::{
         Camera3d,
         primitives::Aabb,
@@ -25,7 +25,6 @@ use bevy::{
         world::EntityWorldMut,
     },
     transform::components::GlobalTransform,
-    ui::{Node, px, widget::Text},
     utils::Parallel,
 };
 use itertools::Itertools;
@@ -86,20 +85,8 @@ impl Plugin for VisdataPlugin {
             update_inverse_global_transform::<With<VisChildren>>,
         )
         .add_systems(Last, recalculate_visleaf)
-        .add_observer(remove_camera_leaf_on_disable_visibility)
+        .add_observer(remove_camera_leaf_on_disable_visibility);
         // .add_systems(PostUpdate, debug_vis_planes)
-        .add_systems(Startup, |mut commands: Commands| {
-            commands.spawn((
-                Node {
-                    position_type: bevy::ui::PositionType::Absolute,
-                    left: px(30),
-                    top: px(30),
-                    ..Default::default()
-                },
-                Text(Default::default()),
-                DebugTextOverlay,
-            ));
-        });
     }
 }
 
@@ -158,9 +145,6 @@ fn in_front(halfspace: HalfSpace, vec: Vec3A) -> bool {
     }
     .is_in_half_space_identity(&halfspace)
 }
-
-#[derive(Component, Debug, Copy, Clone)]
-struct DebugTextOverlay;
 
 #[derive(Component)]
 pub struct LockViscluster;

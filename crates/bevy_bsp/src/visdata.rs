@@ -271,7 +271,9 @@ fn ensure_camera_has_render_mask(
     }
 
     for (ent, mask) in without_layers {
-        commands.entity(ent).insert(RenderLayers::layer(mask.0));
+        commands
+            .entity(ent)
+            .insert(RenderLayers::default().with(mask.0));
     }
 }
 

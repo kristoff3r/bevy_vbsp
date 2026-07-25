@@ -143,8 +143,7 @@ pub trait FaceSpawner: Default {
         mesh: BspMesh,
     );
 
-    fn finish(self)
-    -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)>;
+    fn finish(self) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)>;
 }
 
 /// Groups world faces by the first cluster they appear in, so the PVS can
@@ -188,9 +187,7 @@ impl FaceSpawner for VisclusterFaceSpawner {
         }
     }
 
-    fn finish(
-        self,
-    ) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
+    fn finish(self) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
         self.faces
             .into_iter()
             .map(|((_, texture_name, lightmap), (mesh, clusters))| {
@@ -220,13 +217,16 @@ impl FaceSpawner for GlobalFaceSpawner {
             .or_insert(mesh);
     }
 
-    fn finish(
-        self,
-    ) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
+    fn finish(self) -> impl Iterator<Item = (Box<[u32]>, String, Option<Handle<Image>>, BspMesh)> {
         self.faces
             .into_iter()
             .map(|((texture_name, lightmap), mesh)| (Box::default(), texture_name, lightmap, mesh))
     }
+}
+
+/// Whether a face's texture is one of Hammer's editor tools
+fn is_tool_texture(texture_name: &str) -> bool {
+    texture_name.contains("tools/")
 }
 
 pub fn spawn_worldspawn<FS: FaceSpawner>(
@@ -303,8 +303,8 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
                 continue;
             };
 
-            let leaf_face_range =
-                leaf.first_leaf_face as usize..(leaf.first_leaf_face + leaf.leaf_face_count) as usize;
+            let leaf_face_range = leaf.first_leaf_face as usize
+                ..(leaf.first_leaf_face + leaf.leaf_face_count) as usize;
 
             for leaf_face in bsp.leaf_faces.get(leaf_face_range).unwrap_or_default() {
                 let face_idx = leaf_face.face as u32;
@@ -341,6 +341,22 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
     }
 
     for (clusters, texture_name, lightmap, mesh) in face_spawner.finish() {
+        let collider = mesh.collider();
+
+        if is_tool_texture(&texture_name) {
+            commands.spawn((
+                BspWorldspawnMesh {
+                    surface_prop: bsp_asset.surface_prop(&texture_name).map(str::to_owned),
+                    texture_name: texture_name.clone(),
+                },
+                CollisionMargin(0.01),
+                collider,
+                RigidBody::Static,
+                ChildOf(root_ent),
+            ));
+            continue;
+        }
+
         let material = bsp_asset
             .materials
             .get(&texture_name)
@@ -350,7 +366,6 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
                 bsp_asset.default_material.0.clone()
             });
 
-        let collider = mesh.collider();
         let mesh_handle = meshes.add(mesh.into_mesh(usages));
 
         let mut out = commands.spawn((
@@ -451,7 +466,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
     }
 
     for ((texture_name, _), (mesh, lightmap)) in meshes_to_spawn {
-        if texture_name.contains("tools/") {
+        if is_tool_texture(&texture_name) {
             continue;
         }
         let material = bsp_asset

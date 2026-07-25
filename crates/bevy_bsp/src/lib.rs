@@ -95,6 +95,8 @@ pub const SOURCE_TO_BEVY: Affine3A = Affine3A {
 
 impl Plugin for BspLoaderPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Update, sync_skybox_cameras);
+
         app.init_asset::<BspAsset>()
             .init_resource::<BspSpawnSettings>()
             .init_asset_loader::<BspAssetLoader>()
@@ -264,6 +266,151 @@ pub struct LightmapSettings {
 /// carries the [`GlobalBspInfo`].
 #[derive(Component, Default, Copy, Clone, Debug)]
 pub struct BspMapRoot;
+
+/// The map's `skyname` cubemap, assembled from the six `materials/skybox/*`
+/// sides and hung on the [`BspMapRoot`] — so it is unloaded with the map, and
+/// so *which* camera renders it isn't this crate's decision. Cameras opt in
+/// with [`BspSkyboxCamera`].
+#[derive(Component, Clone, Debug)]
+pub struct BspSkybox {
+    pub image: Handle<Image>,
+}
+
+/// Marks the camera(s) that should render the loaded map's [`BspSkybox`].
+///
+/// Opt-in rather than "whatever camera exists": an app has several (UI, weapon
+/// overlays, render-to-texture), the skybox belongs on exactly one of them, and
+/// the map loads long before the gameplay camera necessarily exists. Insert
+/// this and [`sync_skybox_cameras`] keeps the [`Skybox`] component in step with
+/// map loads and unloads, whichever happens first.
+#[derive(Component, Default, Copy, Clone, Debug)]
+pub struct BspSkyboxCamera {
+    /// Passed through to [`Skybox::brightness`] (lux).
+    pub brightness: f32,
+}
+
+impl BspSkyboxCamera {
+    pub const DEFAULT_BRIGHTNESS: f32 = 1000.0;
+}
+
+/// Stack the six loaded skybox sides into one cube-mapped [`Image`], in the
+/// order [`loader`] collected them (+X, -X, +Y, -Y, +Z, -Z, the order wgpu
+/// expects the array layers in).
+fn build_skybox_cubemap(
+    sides: &[Handle<Image>],
+    images: &mut Assets<Image>,
+) -> Option<Handle<Image>> {
+    const SIDES: usize = 6;
+
+    if sides.len() != SIDES {
+        if !sides.is_empty() {
+            warn!("skybox has {} of {SIDES} sides, skipping", sides.len());
+        }
+        return None;
+    }
+
+    let mut size = UVec2::ZERO;
+    let mut format = None;
+    for handle in sides {
+        let Some(image) = images.get(handle) else {
+            warn!("skybox side is not loaded, skipping skybox");
+            return None;
+        };
+        size = size.max(image.size());
+        let side_format = image.texture_descriptor.format;
+        if *format.get_or_insert(side_format) != side_format {
+            warn!("mismatched texture formats in skybox, skipping");
+            return None;
+        }
+    }
+
+    let format = format?;
+    let pixel_size = format.pixel_size().ok()? as u32;
+    let size = size.max(UVec2::ONE);
+    let side_bytes = (size.x * size.y * pixel_size) as usize;
+
+    let mut cubemap = Image::new(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: SIDES as u32,
+        },
+        TextureDimension::D2,
+        vec![0xff; side_bytes * SIDES],
+        format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+
+    for (i, handle) in sides.iter().enumerate() {
+        let image = images.get(handle)?;
+        let resized;
+        let image = if image.size() == size {
+            image
+        } else {
+            // Sides of a Source skybox are usually all the same size; a mismatch
+            // (an HDR side, a downsampled `dn`) would leave the cubemap face
+            // striped, so scale it to the largest instead.
+            let dynamic = image.clone().try_into_dynamic().ok()?;
+            resized = Image::from_dynamic(
+                dynamic.resize_to_fill(size.x, size.y, FilterType::CatmullRom),
+                true,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            &resized
+        };
+
+        let (Some(dst), Some(src)) = (cubemap.data.as_mut(), image.data.as_ref()) else {
+            warn!("skybox side has no pixel data, skipping skybox");
+            return None;
+        };
+        if src.len() != side_bytes {
+            warn!(
+                "skybox side is {} bytes, expected {side_bytes}, skipping skybox",
+                src.len()
+            );
+            return None;
+        }
+        dst[side_bytes * i..side_bytes * (i + 1)].copy_from_slice(src);
+    }
+
+    cubemap.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+
+    Some(images.add(cubemap))
+}
+
+/// Give every [`BspSkyboxCamera`] the loaded map's cubemap, and take it away
+/// again when the map unloads.
+pub fn sync_skybox_cameras(
+    mut commands: Commands,
+    map: Query<&BspSkybox>,
+    cameras: Query<(Entity, &BspSkyboxCamera, Option<&Skybox>)>,
+) {
+    let wanted = map.iter().next().map(|skybox| &skybox.image);
+
+    for (entity, settings, current) in &cameras {
+        match (wanted, current) {
+            (Some(image), current) if current.map(|s| s.image.as_ref()) != Some(Some(image)) => {
+                let brightness = if settings.brightness > 0.0 {
+                    settings.brightness
+                } else {
+                    BspSkyboxCamera::DEFAULT_BRIGHTNESS
+                };
+                commands.entity(entity).insert(Skybox {
+                    image: Some(image.clone()),
+                    brightness,
+                    ..default()
+                });
+            }
+            (None, Some(_)) => {
+                commands.entity(entity).remove::<Skybox>();
+            }
+            _ => {}
+        }
+    }
+}
 
 // TODO: This should be a relationship, but `vbsp::GenericEntity` doesn't implement `Default` right now
 #[derive(Component)]
@@ -435,7 +582,6 @@ pub fn spawn_map_entities(
     bsp_asset_data: Res<Assets<BspAsset>>,
     mut images: ResMut<Assets<Image>>,
     spawn_settings: Res<BspSpawnSettings>,
-    camera: Option<Single<Entity, With<Camera>>>,
 ) {
     let extrusion = if let Some(block_size) = lightmap_settings.astc_block_size
         && let Some(extents) = extents(block_size)
@@ -685,79 +831,11 @@ pub fn spawn_map_entities(
         }
     }
 
-    const EXPECTED_SKYBOX_IMAGE_COUNT: u32 = 6;
-
-    if bsp_asset.skybox_images.len() == EXPECTED_SKYBOX_IMAGE_COUNT as usize {
-        let (size, format) = {
-            bsp_asset
-                .skybox_images
-                .iter()
-                .map(|img_path| {
-                    let image = images.get(img_path).unwrap();
-
-                    (image.size(), image.texture_descriptor.format)
-                })
-                .reduce(|a, b| {
-                    assert_eq!(a.1, b.1, "Mismatched texture formats in skybox");
-
-                    (
-                        UVec2 {
-                            x: a.0.x.max(b.0.x),
-                            y: a.0.y.max(b.0.y),
-                        },
-                        a.1,
-                    )
-                })
-                .unwrap()
-        };
-        let pixel_size = format.pixel_size().unwrap() as u32;
-        let mut result = Image::new(
-            Extent3d {
-                width: size.x.max(1),
-                height: size.y.max(1),
-                depth_or_array_layers: EXPECTED_SKYBOX_IMAGE_COUNT,
-            },
-            TextureDimension::D2,
-            vec![0xff; (size.x * size.y * pixel_size * EXPECTED_SKYBOX_IMAGE_COUNT) as usize],
-            format,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        for (i, handle) in bsp_asset.skybox_images.iter().enumerate() {
-            let image = images.get(handle).unwrap();
-            let image_owned;
-            let image = if image.size() == size {
-                image
-            } else {
-                let resized = image.clone().try_into_dynamic().unwrap().resize_to_fill(
-                    size.x,
-                    size.y,
-                    FilterType::CatmullRom,
-                );
-                image_owned = Image::from_dynamic(resized, true, RenderAssetUsages::RENDER_WORLD);
-                &image_owned
-            };
-            if let Some(slice) = result.data.as_mut() {
-                let bytes = (size.x * size.y * pixel_size) as usize;
-                slice[bytes * i..bytes * (i + 1)].copy_from_slice(image.data.as_ref().unwrap());
-            }
-        }
-        result.texture_view_descriptor = Some(TextureViewDescriptor {
-            dimension: Some(TextureViewDimension::Cube),
-            ..default()
-        });
-
-        let image = images.add(result);
-
-        if let Some(camera) = camera {
-            commands.entity(*camera).insert((
-                //
-                Skybox {
-                    image: Some(image),
-                    brightness: 1000.0,
-                    ..default()
-                },
-            ));
-        }
+    if let Some(image) = build_skybox_cubemap(&bsp_asset.skybox_images, &mut images) {
+        // The cubemap belongs to the map, not to a camera: which camera draws it
+        // is the app's call (see `BspSkyboxCamera`), and hanging it here means it
+        // is dropped when the map is.
+        commands.entity(world_root).insert(BspSkybox { image });
     }
 
     commands.entity(world_root).insert(GlobalBspInfo {

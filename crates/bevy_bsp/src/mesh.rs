@@ -355,6 +355,7 @@ pub fn spawn_worldspawn<FS: FaceSpawner>(
 
         let mut out = commands.spawn((
             BspWorldspawnMesh {
+                surface_prop: bsp_asset.surface_prop(&texture_name).map(str::to_owned),
                 texture_name: texture_name.clone(),
             },
             CollisionMargin(0.01),
@@ -468,6 +469,7 @@ pub fn spawn_bsp_model<FS: FaceSpawner>(
         let mut entity = commands.spawn((
             ChildOf(map_root),
             BspBrushEntityMesh {
+                surface_prop: bsp_asset.surface_prop(&texture_name).map(str::to_owned),
                 texture_name: texture_name.clone(),
                 model_index,
                 classname: classname.to_owned(),

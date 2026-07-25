@@ -48,6 +48,23 @@ pub struct BspAsset {
     pub spawn_points: Vec<Transform>,
 }
 
+impl BspAsset {
+    /// A texture's Source `$surfaceprop` — the material name ("concrete",
+    /// "wood", "metal", …) that `scripts/surfaceproperties*.txt` keys its
+    /// physical properties off. Lowercased, because [`vmt_parser::from_str`]
+    /// lowercases the whole VMT.
+    ///
+    /// `None` when the material declares none. That is normal rather than
+    /// exceptional: `decals/`, `tools/` and editor textures never set it, and
+    /// [`vmt_parser::material::Material::surface_prop`] only reads the key off
+    /// the shaders that can carry it (notably not `VertexLitGeneric`, which is
+    /// props — use [`vmdl::Model::surface_prop`] for those). Callers want a
+    /// fallback material, not a warning.
+    pub fn surface_prop(&self, texture_name: &str) -> Option<&str> {
+        self.vmt_materials.get(texture_name)?.surface_prop()
+    }
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct BspSettings;
 
